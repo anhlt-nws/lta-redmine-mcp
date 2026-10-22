@@ -16,10 +16,11 @@ MCP server cho Redmine, viết bằng NestJS, deploy dùng chung cho team qua HT
 - Auth: header `X-Redmine-API-Key` của từng user; server không lưu key và không log key.
 - Danh sách chặn: do admin cấu hình qua env, áp dụng cho mọi user, chỉ chứa **project ID số**.
 - **Không chặn đệ quy**: chỉ chặn đúng các ID được liệt kê; admin tự thêm project con nếu cần.
-- Phạm vi tool: đọc + ghi cơ bản.
+- Phạm vi tool: đọc + ghi cơ bản, kèm attachment của issue (upload khi tạo/sửa, xem, tải, xoá).
+- File đi qua tham số tool dạng base64 (không tải từ URL, tránh SSRF); giới hạn `MAX_FILE_MB`.
 
 ### Không làm (YAGNI)
-Wiki, attachment, `/search.json`, cache, rate limit, Docker, audit log, cấu hình chặn riêng cho từng user.
+Wiki, attachment của wiki/document/project, upload từ URL, `/search.json`, cache, rate limit, Docker, audit log, cấu hình chặn riêng cho từng user.
 
 ## 2. Kiến trúc
 
@@ -56,12 +57,38 @@ MCP client ──HTTP POST /mcp (header X-Redmine-API-Key)──► McpControlle
 | `list_projects` | `GET /projects.json`, lọc bỏ ID bị chặn |
 | `get_project` | resolve, check, trả project |
 | `list_issues` (filter: project, status, assignee, subject) | nếu có project thì resolve và check; `GET /issues.json`; lọc theo `issue.project.id` |
-| `get_issue` | `GET /issues/{id}.json?include=journals`; check `issue.project.id`. Không include `children`/`relations` vì chứa subject của issue khác mà không kèm project |
+| `get_issue` | `GET /issues/{id}.json?include=journals,attachments`; check `issue.project.id`. Không include `children`/`relations` vì chứa subject của issue khác mà không kèm project |
 | `list_time_entries` (filter: project, issue, user, from, to) | nếu có project thì resolve và check; nếu có issue thì `GET` issue và check; `GET /time_entries.json`; lọc theo `entry.project.id` |
-| `create_issue` | resolve và check project đích, rồi `POST /issues.json` |
-| `update_issue` | `GET` issue và check project hiện tại; nếu payload đổi `project_id` thì resolve và check project mới; `PUT /issues/{id}.json` |
+| `create_issue` | resolve và check project đích; upload attachment (§3.1); `POST /issues.json` |
+| `update_issue` | `GET` issue và check project hiện tại; nếu payload đổi `project_id` thì resolve và check project mới; upload attachment (§3.1); `PUT /issues/{id}.json` |
 | `add_issue_comment` | `GET` issue và check; `PUT /issues/{id}.json` với `notes` |
 | `log_time` | phải có `issue_id` hoặc `project_id`: có issue thì `GET` issue và check; có project thì resolve và check; `POST /time_entries.json` |
+| `get_attachment` (`issue_id`, `attachment_id`) | §3.1 |
+| `delete_attachment` (`issue_id`, `attachment_id`) | §3.1 |
+
+### 3.1 Attachment
+
+**Upload** — `create_issue`/`update_issue` nhận thêm:
+```ts
+attachments?: { filename: string; content_base64: string; content_type?: string; description?: string }[]
+```
+1. Check project (như bảng trên) **trước** khi upload; bị chặn thì không gửi byte nào lên Redmine.
+2. Decode base64; sai định dạng ⇒ lỗi `Invalid base64 for <filename>`; **tổng** dung lượng đã decode của mọi file trong một lần gọi > `MAX_FILE_MB` ⇒ lỗi `File too large (max <N> MB)`.
+3. Mỗi file: `POST /uploads.json?filename=<filename>` (`Content-Type: application/octet-stream`, body binary) ⇒ `upload.token`.
+4. Gửi issue kèm `uploads: [{ token, filename, content_type, description }]`.
+
+Body limit của Express (mặc định 100 KB) phải nâng lên đủ chứa base64 của `MAX_FILE_MB` (`ceil(MAX_FILE_MB * 4/3) + 1` MB).
+
+**Xem** — `get_issue` trả `attachments[]` (`id, filename, filesize, content_type, description, author, created_on`).
+
+**Tải / xoá** — JSON attachment của Redmine không cho biết project chứa nó, nên tool bắt buộc có cả `issue_id` và `attachment_id`:
+1. `GET` issue với `include=attachments`, check project.
+2. `attachment_id` không thuộc `issue.attachments` ⇒ `Not found`.
+3. `get_attachment`: `filesize` > `MAX_FILE_MB` ⇒ lỗi `File too large (max <N> MB)`; tải từ `${REDMINE_URL}/attachments/download/{id}` (tự dựng URL, không dùng `content_url` để key không đi sang host khác). Kết quả:
+   - `text/*`, `application/json`, `application/xml`: MCP text content.
+   - `image/*`: MCP image content (base64 + mimeType).
+   - Khác: text content là JSON `{ filename, content_type, content_base64 }`.
+4. `delete_attachment`: `DELETE /attachments/{id}.json` (xác nhận phiên bản Redmine hỗ trợ khi smoke test).
 
 ### Phân trang
 List tool nhận `limit` (mặc định 25, tối đa 100) và `offset`, trả `{ items, has_more }` với `has_more = offset + limit < total_count` của Redmine. Không trả `total_count` vì con số này có tính cả item bị chặn. Do lọc sau khi lấy về, một trang có thể trả ít hơn `limit`.
@@ -77,6 +104,7 @@ List tool nhận `limit` (mặc định 25, tối đa 100) và `offset`, trả `
 REDMINE_URL=https://redmine.example.com   # bắt buộc
 BLOCKED_PROJECT_IDS=12,15,40              # có thể rỗng; phần tử không phải số nguyên dương thì không khởi động
 PORT=3000                                  # mặc định 3000
+MAX_FILE_MB=5                              # mặc định 5; giới hạn tổng upload mỗi lần gọi và mỗi file tải về
 ```
 
 Config phía client:
@@ -99,6 +127,7 @@ src/
   mcp/tools/projects.tools.ts
   mcp/tools/issues.tools.ts
   mcp/tools/time-entries.tools.ts
+  mcp/tools/attachments.tools.ts
 test/
   project-access.policy.spec.ts
   redmine.gateway.spec.ts
@@ -114,6 +143,9 @@ test/
   - list theo project cha được phép mà có item của project con bị chặn thì item đó vẫn bị lọc
   - `update_issue` chuyển issue sang project bị chặn thì bị từ chối, không có `PUT` nào được gửi
   - `log_time` / `add_issue_comment` vào issue thuộc project bị chặn thì bị từ chối, không có request ghi nào được gửi
+  - `create_issue` kèm file vào project bị chặn: không có `POST /uploads.json` nào
+  - `get_attachment` / `delete_attachment`: issue bị chặn, hoặc attachment không thuộc issue ⇒ `Not found`, không tải/xoá
+  - vượt `MAX_FILE_MB` (upload tổng, download theo `filesize`) và base64 sai ⇒ lỗi, không upload
 - **Controller**: thiếu header `X-Redmine-API-Key` thì trả 401.
 - Không có e2e với Redmine thật; smoke test thủ công bằng MCP Inspector.
 
@@ -121,3 +153,5 @@ test/
 - Text tự do (description, journal notes) nhắc tới project bị chặn thì không lọc được.
 - Journal `details` có thể chứa ID số của project cũ hoặc mới khi issue từng được chuyển project.
 - `parent` của issue chỉ chứa ID nên không lộ nội dung, nhưng lộ việc issue cha tồn tại.
+- File đi qua context của AI dưới dạng base64 nên tốn token; chỉ hợp file nhỏ.
+- Nếu upload được vài file rồi lỗi ở file sau hoặc ở bước tạo/sửa issue, các file đã upload bị bỏ lại ở trạng thái chưa gắn vào issue nào; admin dọn bằng `rake redmine:attachments:prune`.
