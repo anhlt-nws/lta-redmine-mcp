@@ -362,3 +362,76 @@ ${b64.slice(8)}
     expect(m.calls.at(-1)!.url.pathname).toBe('/attachments/7.json');
   });
 });
+
+describe('blocked identifiers', () => {
+  const make = () => {
+    const cfg = parseConfig({ REDMINE_URL: 'https://rm.example.com', BLOCKED_PROJECT_IDS: '12,nws-sale' });
+    return new RedmineGateway(cfg, new ProjectAccessPolicy(cfg));
+  };
+  const lookups = (m: { calls: any[] }) => m.calls.filter((c) => c.url.pathname === '/projects/nws-sale.json');
+  const resolved = { 'GET /projects/nws-sale.json': { body: { project: { id: 42, identifier: 'nws-sale' } } } };
+
+  it('resolves identifier to id, then blocks its data; resolves only once', async () => {
+    const g = make();
+    const m = mockFetch({
+      ...resolved,
+      'GET /issues/5.json': { body: { issue: { id: 5, project: { id: 42 } } } },
+      'GET /issues.json': { body: { issues: [{ id: 5, project: { id: 42 } }, { id: 6, project: { id: 13 } }], total_count: 2 } },
+    });
+    await expect(g.getIssue('k', 5)).rejects.toThrow('Not found');
+    expect((await g.listIssues('k', {})).items.map((i) => i.id)).toEqual([6]);
+    expect(lookups(m)).toHaveLength(1);
+  });
+
+  it.each([404, 403])('lookup %p (user cannot see it) => request proceeds, retried next call', async (status) => {
+    const g = make();
+    const m = mockFetch({
+      'GET /projects/nws-sale.json': { status },
+      'GET /issues/6.json': { body: { issue: { id: 6, project: { id: 13 } } } },
+    });
+    expect((await g.getIssue('k', 6)).id).toBe(6);
+    await g.getIssue('k', 6);
+    expect(lookups(m)).toHaveLength(2);
+  });
+
+  it('lookup 5xx => Redmine unavailable, no data request sent', async () => {
+    const g = make();
+    const m = mockFetch({ 'GET /projects/nws-sale.json': { status: 503 }, 'GET /issues/6.json': { body: { issue: { id: 6, project: { id: 13 } } } } });
+    await expect(g.getIssue('k', 6)).rejects.toThrow('Redmine unavailable');
+    expect(m.calls.map((c) => c.url.pathname)).not.toContain('/issues/6.json');
+  });
+
+  // Catches a public method that skips resolution (0 lookups) or repeats it via nested calls (>1).
+  const att = { id: 7, filename: 'a', filesize: 1, content_type: 'text/plain' };
+  const routes = {
+    'GET /projects/nws-sale.json': { status: 404 },
+    'GET /projects.json': { body: { projects: [{ id: 13 }], total_count: 1 } },
+    'GET /projects/13.json': { body: { project: { id: 13 } } },
+    'GET /issues.json': { body: { issues: [], total_count: 0 } },
+    'GET /issues/1.json': { body: { issue: { id: 1, project: { id: 13 }, attachments: [att] } } },
+    'POST /issues.json': { status: 201, body: { issue: { id: 9 } } },
+    'PUT /issues/1.json': { status: 204 },
+    'GET /time_entries.json': { body: { time_entries: [], total_count: 0 } },
+    'POST /time_entries.json': { status: 201, body: { time_entry: { id: 3 } } },
+    'GET /attachments/download/7': { raw: Buffer.from('x') },
+    'DELETE /attachments/7.json': { status: 204 },
+  };
+  it.each<[string, (g: RedmineGateway) => Promise<unknown>]>([
+    ['listProjects', (g) => g.listProjects('k', {})],
+    ['getProject', (g) => g.getProject('k', 13)],
+    ['resolveProjectId', (g) => g.resolveProjectId('k', 13)],
+    ['listIssues', (g) => g.listIssues('k', { project: 13 })],
+    ['getIssue', (g) => g.getIssue('k', 1)],
+    ['createIssue', (g) => g.createIssue('k', { project: 13, subject: 's' })],
+    ['updateIssue', (g) => g.updateIssue('k', 1, { project: 13 })],
+    ['addIssueComment', (g) => g.addIssueComment('k', 1, 'hi')],
+    ['listTimeEntries', (g) => g.listTimeEntries('k', { project: 13, issue_id: 1 })],
+    ['logTime', (g) => g.logTime('k', { issue_id: 1, project: 13, hours: 1 })],
+    ['getAttachment', (g) => g.getAttachment('k', 1, 7)],
+    ['deleteAttachment', (g) => g.deleteAttachment('k', 1, 7)],
+  ])('%s resolves pending identifiers exactly once', async (_name, call) => {
+    const m = mockFetch(routes);
+    await call(make());
+    expect(lookups(m)).toHaveLength(1);
+  });
+});

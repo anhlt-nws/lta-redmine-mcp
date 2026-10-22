@@ -1,6 +1,8 @@
 export interface AppConfig {
   redmineUrl: string;
   blockedProjectIds: Set<number>;
+  // Resolved to ids at runtime (RedmineGateway), since only Redmine knows the mapping.
+  blockedIdentifiers: Set<string>;
   port: number;
   maxFileMb: number;
 }
@@ -19,11 +21,13 @@ export function parseConfig(env: NodeJS.ProcessEnv): AppConfig {
   }
 
   const blockedProjectIds = new Set<number>();
+  const blockedIdentifiers = new Set<string>();
   for (const part of (env.BLOCKED_PROJECT_IDS ?? '').split(',')) {
     const s = part.trim();
     if (!s) continue;
-    if (!posInt(s)) throw new Error(`BLOCKED_PROJECT_IDS has invalid id: "${s}"`);
-    blockedProjectIds.add(Number(s));
+    if (posInt(s)) blockedProjectIds.add(Number(s));
+    else if (/^[a-z][a-z0-9_-]*$/.test(s)) blockedIdentifiers.add(s);
+    else throw new Error(`BLOCKED_PROJECT_IDS has invalid id or identifier: "${s}"`);
   }
 
   const portRaw = env.PORT?.trim() || '3000';
@@ -38,6 +42,7 @@ export function parseConfig(env: NodeJS.ProcessEnv): AppConfig {
   return {
     redmineUrl: url.replace(/\/+$/, ''),
     blockedProjectIds,
+    blockedIdentifiers,
     port: Number(portRaw),
     maxFileMb,
   };

@@ -24,7 +24,23 @@ export class RedmineGateway {
     private readonly policy: ProjectAccessPolicy,
   ) {}
 
+  // Every public method calls this first; internal calls use the private load*/projectId helpers so it runs once.
+  // Lookups use the caller's key: 404/403 means this user cannot see the project (nor its data), so we skip it
+  // and retry on the next call instead of caching a negative result. Anything else fails closed.
+  private async resolveBlocked(apiKey: string): Promise<void> {
+    await Promise.all(this.policy.pendingIdentifiers().map(async (identifier) => {
+      try {
+        const { project } = await this.request(apiKey, 'GET', `/projects/${encodeURIComponent(identifier)}.json`);
+        this.policy.resolveIdentifier(identifier, project.id);
+      } catch (err) {
+        if (err instanceof RedmineError && ['Not found', 'Forbidden'].includes(err.message)) return;
+        throw err;
+      }
+    }));
+  }
+
   async listProjects(apiKey: string, page: PageArgs): Promise<Page<any>> {
+    await this.resolveBlocked(apiKey);
     const res = await this.page(apiKey, '/projects.json', 'projects', {}, page, (p) => p.id);
     return { ...res, items: res.items.map((p) => this.stripBlockedParent(p)) };
   }
@@ -39,18 +55,29 @@ export class RedmineGateway {
   }
 
   async getProject(apiKey: string, ref: ProjectRef): Promise<any> {
+    await this.resolveBlocked(apiKey);
+    return this.loadProject(apiKey, ref);
+  }
+
+  async resolveProjectId(apiKey: string, ref: ProjectRef): Promise<number> {
+    await this.resolveBlocked(apiKey);
+    return this.projectId(apiKey, ref);
+  }
+
+  private async loadProject(apiKey: string, ref: ProjectRef): Promise<any> {
     const { project } = await this.request(apiKey, 'GET', `/projects/${encodeURIComponent(String(ref))}.json`);
     this.policy.assertAllowed(project.id);
     return this.stripBlockedParent(project);
   }
 
-  async resolveProjectId(apiKey: string, ref: ProjectRef): Promise<number> {
-    return (await this.getProject(apiKey, ref)).id;
+  private async projectId(apiKey: string, ref: ProjectRef): Promise<number> {
+    return (await this.loadProject(apiKey, ref)).id;
   }
 
   async listIssues(apiKey: string, args: ListIssuesArgs): Promise<Page<any>> {
+    await this.resolveBlocked(apiKey);
     const query: Query = {};
-    if (args.project !== undefined) query.project_id = String(await this.resolveProjectId(apiKey, args.project));
+    if (args.project !== undefined) query.project_id = String(await this.projectId(apiKey, args.project));
     if (args.subject === undefined) {
       query.status_id = args.status;
       query.assigned_to_id = args.assigned_to;
@@ -74,27 +101,44 @@ export class RedmineGateway {
   }
 
   async getIssue(apiKey: string, id: number): Promise<any> {
+    await this.resolveBlocked(apiKey);
+    return this.loadIssue(apiKey, id);
+  }
+
+  private async loadIssue(apiKey: string, id: number): Promise<any> {
     const { issue } = await this.request(apiKey, 'GET', `/issues/${id}.json`, { include: 'journals,attachments' });
     this.policy.assertAllowed(issue.project.id);
     return issue;
   }
 
   async createIssue(apiKey: string, args: CreateIssueArgs): Promise<any> {
+    await this.resolveBlocked(apiKey);
     const { project, attachments, ...fields } = args;
-    const project_id = await this.resolveProjectId(apiKey, project);
+    const project_id = await this.projectId(apiKey, project);
     const uploads = await this.uploadFiles(apiKey, attachments);
     return (await this.request(apiKey, 'POST', '/issues.json', undefined, { issue: { ...fields, project_id, uploads } })).issue;
   }
 
   async updateIssue(apiKey: string, id: number, args: UpdateIssueArgs): Promise<void> {
-    await this.getIssue(apiKey, id);
+    await this.resolveBlocked(apiKey);
+    await this.update(apiKey, id, args);
+  }
+
+  async addIssueComment(apiKey: string, id: number, notes: string): Promise<void> {
+    await this.resolveBlocked(apiKey);
+    await this.update(apiKey, id, { notes });
+  }
+
+  private async update(apiKey: string, id: number, args: UpdateIssueArgs): Promise<void> {
+    await this.loadIssue(apiKey, id);
     const { project, attachments, ...fields } = args;
-    const project_id = project === undefined ? undefined : await this.resolveProjectId(apiKey, project);
+    const project_id = project === undefined ? undefined : await this.projectId(apiKey, project);
     const uploads = await this.uploadFiles(apiKey, attachments);
     await this.request(apiKey, 'PUT', `/issues/${id}.json`, undefined, { issue: { ...fields, project_id, uploads } });
   }
 
   async getAttachment(apiKey: string, issueId: number, attachmentId: number): Promise<DownloadedFile> {
+    await this.resolveBlocked(apiKey);
     const att = await this.findAttachment(apiKey, issueId, attachmentId);
     if (att.filesize > this.maxBytes) throw this.tooLarge();
     const res = await this.send(apiKey, 'GET', new URL(`${this.config.redmineUrl}/attachments/download/${attachmentId}`));
@@ -103,6 +147,7 @@ export class RedmineGateway {
   }
 
   async deleteAttachment(apiKey: string, issueId: number, attachmentId: number): Promise<void> {
+    await this.resolveBlocked(apiKey);
     await this.findAttachment(apiKey, issueId, attachmentId);
     await this.request(apiKey, 'DELETE', `/attachments/${attachmentId}.json`);
   }
@@ -111,7 +156,7 @@ export class RedmineGateway {
   private tooLarge(): RedmineError { return new RedmineError(`File too large (max ${this.config.maxFileMb} MB)`); }
 
   private async findAttachment(apiKey: string, issueId: number, attachmentId: number): Promise<any> {
-    const att = ((await this.getIssue(apiKey, issueId)).attachments ?? []).find((a: any) => a.id === attachmentId);
+    const att = ((await this.loadIssue(apiKey, issueId)).attachments ?? []).find((a: any) => a.id === attachmentId);
     if (!att) throw notFound();
     return att;
   }
@@ -137,23 +182,21 @@ export class RedmineGateway {
     return result;
   }
 
-  async addIssueComment(apiKey: string, id: number, notes: string): Promise<void> {
-    await this.updateIssue(apiKey, id, { notes });
-  }
-
   async listTimeEntries(apiKey: string, args: ListTimeEntriesArgs): Promise<Page<any>> {
+    await this.resolveBlocked(apiKey);
     const { project, limit, offset, ...filters } = args;
-    if (args.issue_id !== undefined) await this.getIssue(apiKey, args.issue_id);
+    if (args.issue_id !== undefined) await this.loadIssue(apiKey, args.issue_id);
     const query: Query = { ...filters };
-    if (project !== undefined) query.project_id = await this.resolveProjectId(apiKey, project);
+    if (project !== undefined) query.project_id = await this.projectId(apiKey, project);
     return this.page(apiKey, '/time_entries.json', 'time_entries', query, { limit, offset });
   }
 
   async logTime(apiKey: string, args: LogTimeArgs): Promise<any> {
     const { project, ...fields } = args;
     if (args.issue_id === undefined && project === undefined) throw new RedmineError('issue_id or project is required');
-    if (args.issue_id !== undefined) await this.getIssue(apiKey, args.issue_id);
-    const project_id = project === undefined ? undefined : await this.resolveProjectId(apiKey, project);
+    await this.resolveBlocked(apiKey);
+    if (args.issue_id !== undefined) await this.loadIssue(apiKey, args.issue_id);
+    const project_id = project === undefined ? undefined : await this.projectId(apiKey, project);
     return (await this.request(apiKey, 'POST', '/time_entries.json', undefined, { time_entry: { ...fields, project_id } })).time_entry;
   }
 

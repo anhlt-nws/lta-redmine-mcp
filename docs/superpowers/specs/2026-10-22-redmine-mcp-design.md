@@ -14,7 +14,7 @@ MCP server cho Redmine, viết bằng NestJS, deploy dùng chung cho team qua HT
 ### Quyết định đã chốt
 - Transport: Streamable HTTP, stateless, SDK chính thức `@modelcontextprotocol/sdk`.
 - Auth: header `X-Redmine-API-Key` của từng user; server không lưu key và không log key.
-- Danh sách chặn: do admin cấu hình qua env, áp dụng cho mọi user, chỉ chứa **project ID số**.
+- Danh sách chặn: do admin cấu hình qua env, áp dụng cho mọi user, chứa **project ID số và/hoặc identifier** (vd `12,nws-sale`). Identifier được đổi sang ID lúc chạy (§3.2).
 - **Không chặn đệ quy**: chỉ chặn đúng các ID được liệt kê; admin tự thêm project con nếu cần.
 - Phạm vi tool: đọc + ghi cơ bản, kèm attachment của issue (upload khi tạo/sửa, xem, tải, xoá).
 - File đi qua tham số tool dạng base64 (không tải từ URL, tránh SSRF); giới hạn `MAX_FILE_MB`.
@@ -98,11 +98,21 @@ List tool nhận `limit` (mặc định 25, tối đa 100) và `offset`, trả `
 - Redmine 401/403/422: chuyển nguyên message (gồm `errors[]` của 422) thành tool error (`isError: true`).
 - Lỗi mạng hoặc 5xx: tool error `Redmine unavailable`.
 
+### 3.2 Identifier trong danh sách chặn
+
+Mỗi method public của gateway, trước mọi việc khác, đổi các identifier chưa có ID bằng `GET /projects/{identifier}.json` với **key của user** (song song):
+- Thành công ⇒ ID được thêm vào tập chặn và cache cho mọi user (identifier trong Redmine không đổi được).
+- 404/403 ⇒ user này không xem được project đó nên cũng không đọc được dữ liệu của nó; bỏ qua, **không cache kết quả âm**, thử lại ở lần gọi sau.
+- Lỗi khác (5xx, mạng, 401) ⇒ request lỗi luôn (fail closed), không gửi request lấy dữ liệu nào.
+
+Lời gọi nội bộ giữa các method dùng helper private nên mỗi lần gọi tool chỉ đổi đúng một lần.
+
 ## 4. Cấu hình
 
 ```
 REDMINE_URL=https://redmine.example.com   # bắt buộc
-BLOCKED_PROJECT_IDS=12,15,40              # có thể rỗng; phần tử không phải số nguyên dương thì không khởi động
+BLOCKED_PROJECT_IDS=12,nws-sale           # có thể rỗng; mỗi phần tử là ID số dương hoặc identifier
+                                          # (chữ thường/số/-/_, bắt đầu bằng chữ); sai định dạng thì không khởi động
 PORT=3000                                  # mặc định 3000
 MAX_FILE_MB=5                              # mặc định 5; giới hạn tổng upload mỗi lần gọi và mỗi file tải về
 ```
@@ -136,7 +146,8 @@ test/
 
 ## 6. Testing (Jest)
 
-- **Policy và config**: `isBlocked`, parse `BLOCKED_PROJECT_IDS` (rỗng, khoảng trắng, giá trị không phải số).
+- **Policy và config**: `isBlocked`, parse `BLOCKED_PROJECT_IDS` (rỗng, khoảng trắng, ID lẫn identifier, giá trị sai định dạng).
+- **Identifier** (§3.2): đổi sang ID rồi chặn; chỉ đổi một lần; 404/403 thì vẫn chạy và thử lại; 5xx thì lỗi, không gửi request dữ liệu; mọi method public đổi đúng một lần.
 - **Gateway** (mock `fetch`), mỗi tool ít nhất một case chặn:
   - đọc 1 resource của project bị chặn thì trả `Not found`
   - list chứa item bị chặn thì item đó bị lọc
@@ -155,5 +166,7 @@ test/
 - `parent` của issue chỉ chứa ID nên không lộ nội dung, nhưng lộ việc issue cha tồn tại.
 - `fixed_version` của issue được phép có thể là version được share từ project bị chặn (lộ tên version).
 - Với user không phải member, Redmine trả 403 cho project private bị chặn nhưng 404 cho project không tồn tại ⇒ lộ sự tồn tại (không lộ dữ liệu); server giữ nguyên 403 để lỗi quyền thật vẫn rõ ràng.
+- Gõ sai identifier trong `BLOCKED_PROJECT_IDS` không bị phát hiện (Redmine trả 404 giống như khi user không có quyền). Kiểm tra sau khi cấu hình: `get_project` với identifier đó phải trả `Not found` với một user xem được project.
+- User không xem được một project bị chặn khai báo bằng identifier sẽ tốn thêm 1 request nhỏ cho mỗi identifier như vậy ở mỗi lần gọi tool (không cache kết quả âm).
 - File đi qua context của AI dưới dạng base64 nên tốn token; chỉ hợp file nhỏ.
 - Nếu upload được vài file rồi lỗi ở file sau hoặc ở bước tạo/sửa issue, các file đã upload bị bỏ lại ở trạng thái chưa gắn vào issue nào; admin dọn bằng `rake redmine:attachments:prune`.

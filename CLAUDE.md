@@ -32,7 +32,8 @@ The security invariant — **projects in `BLOCKED_PROJECT_IDS` are invisible and
 - Lists always re-filter after fetching (`page()`), because Redmine includes subproject data even when `project_id` is given. Pagination returns `{ items, has_more }`, never `total_count`.
 - Writes check every project involved (current issue project, new project, log-time target) **before** sending anything, including before any `POST /uploads.json`.
 - Attachments can only be reached via `issue_id` + `attachment_id` (Redmine's attachment JSON has no project). Downloads use a URL built from `REDMINE_URL`, never Redmine's `content_url`; `fetch` uses `redirect: 'error'` so the API key never follows a redirect.
-- Blocking is NOT recursive: only listed ids are blocked; admins list subprojects themselves.
+- Blocking is NOT recursive: only listed projects are blocked; admins list subprojects themselves.
+- `BLOCKED_PROJECT_IDS` may hold identifiers. Every public gateway method first calls `resolveBlocked(apiKey)`, which maps pending identifiers to ids with the caller's key (success cached globally; 404/403 skipped and retried next call; other errors fail closed). Internal calls between methods must use the private `loadProject`/`projectId`/`loadIssue`/`update` helpers, not the public methods, or resolution repeats — a test asserts exactly one lookup per public method, so add new public methods to it.
 
 Errors: gateway throws `RedmineError` (user-facing message); `toolResult()` (`src/mcp/tools/result.ts`) turns it into `isError: true`, anything else is rethrown. `MAX_FILE_MB` bounds total upload size per call and each download; `configureApp()` (`src/app.setup.ts`) raises the Express JSON body limit to fit base64, so the app must be created with `{ bodyParser: false }`.
 
