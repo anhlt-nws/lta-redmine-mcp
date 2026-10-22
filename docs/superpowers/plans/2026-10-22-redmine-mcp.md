@@ -12,12 +12,13 @@
 
 ## Global Constraints
 
-- Env: `REDMINE_URL` (bắt buộc), `BLOCKED_PROJECT_IDS` (có thể rỗng, phân tách bằng dấu phẩy), `PORT` (mặc định `3000`). Config sai thì process thoát khi khởi động.
+- Env: `REDMINE_URL` (bắt buộc), `BLOCKED_PROJECT_IDS` (có thể rỗng, phân tách bằng dấu phẩy), `PORT` (mặc định `3000`), `MAX_FILE_MB` (mặc định `5`, số dương). Config sai thì process thoát khi khởi động.
+- Attachment: file đi qua tham số tool dạng base64; check project **trước** mọi `POST /uploads.json`; tải/xoá bắt buộc có cả `issue_id` và `attachment_id`; URL tải tự dựng `${REDMINE_URL}/attachments/download/{id}`.
 - Header auth: `X-Redmine-API-Key`. Không lưu key, không log key.
 - Bị chặn ⇒ lỗi với message đúng `Not found` (giống Redmine 404).
 - List tool: `limit` mặc định 25, tối đa 100; `offset` mặc định 0; trả `{ items, has_more }`, **không** trả `total_count`.
 - Lỗi Redmine 401/403/422 ⇒ chuyển message; mạng/5xx ⇒ `Redmine unavailable`. Tool error dùng `isError: true`.
-- Không có: wiki, attachment, `/search.json`, cache, Docker, `children`/`relations` của issue.
+- Không có: wiki, attachment ngoài issue, upload từ URL, `/search.json`, cache, Docker, `children`/`relations` của issue.
 - Load `.env` bằng `node --env-file-if-exists=.env` (Node ≥ 22.9), không thêm `@nestjs/config`.
 - Lệch spec §5 có chủ đích: file `*.spec.ts` đặt cạnh source (convention Nest, jest `rootDir: src`), thay vì thư mục `test/`.
 
@@ -26,7 +27,7 @@
 1. `BLOCKED_PROJECT_IDS` có dấu phẩy thừa hoặc khoảng trắng (`"12, 15,"`) ⇒ bỏ qua phần tử rỗng, vẫn khởi động; `"12,abc"` ⇒ không khởi động. Test ở Task 1.
 2. Project truyền dạng chuỗi số `"12"` hoặc identifier của project bị chặn ⇒ đều `Not found`. Test ở Task 3.
 3. `REDMINE_URL` có dấu `/` cuối ⇒ không sinh URL `//`. Test ở Task 3.
-4. Header `X-Redmine-API-Key` rỗng hoặc chỉ có khoảng trắng ⇒ 401 như thiếu header. Test ở Task 6.
+4. Header `X-Redmine-API-Key` rỗng hoặc chỉ có khoảng trắng ⇒ 401 như thiếu header. Test ở Task 7.
 5. Redmine 422 với nhiều lỗi ⇒ message ghép `errors` bằng `"; "` để AI tự sửa được. Test ở Task 3.
 
 ---
@@ -41,7 +42,7 @@
 **Interfaces:**
 - Produces:
   ```ts
-  export interface AppConfig { redmineUrl: string; blockedProjectIds: Set<number>; port: number }
+  export interface AppConfig { redmineUrl: string; blockedProjectIds: Set<number>; port: number; maxFileMb: number }
   export function parseConfig(env: NodeJS.ProcessEnv): AppConfig // throw Error khi sai
   export const APP_CONFIG = 'APP_CONFIG' // injection token
   ```
@@ -57,11 +58,14 @@ rồi `npm i @modelcontextprotocol/sdk zod@3`. Xoá app controller/service mẫu
 ```ts
 const base = { REDMINE_URL: 'https://rm.example.com' };
 it('parses full config', () => {
-  expect(parseConfig({ ...base, BLOCKED_PROJECT_IDS: '12,15,40', PORT: '4000' }))
-    .toEqual({ redmineUrl: 'https://rm.example.com', blockedProjectIds: new Set([12, 15, 40]), port: 4000 });
+  expect(parseConfig({ ...base, BLOCKED_PROJECT_IDS: '12,15,40', PORT: '4000', MAX_FILE_MB: '10' }))
+    .toEqual({ redmineUrl: 'https://rm.example.com', blockedProjectIds: new Set([12, 15, 40]), port: 4000, maxFileMb: 10 });
 });
-it('defaults: empty blocklist, port 3000', () => {
-  expect(parseConfig(base)).toEqual({ redmineUrl: 'https://rm.example.com', blockedProjectIds: new Set(), port: 3000 });
+it('defaults: empty blocklist, port 3000, 5 MB', () => {
+  expect(parseConfig(base)).toEqual({ redmineUrl: 'https://rm.example.com', blockedProjectIds: new Set(), port: 3000, maxFileMb: 5 });
+});
+it.each(['0', '-1', 'abc'])('rejects MAX_FILE_MB=%s', (v) => {
+  expect(() => parseConfig({ ...base, MAX_FILE_MB: v })).toThrow(/MAX_FILE_MB/);
 });
 it('strips trailing slash of REDMINE_URL', () => {
   expect(parseConfig({ REDMINE_URL: 'https://rm.example.com/' }).redmineUrl).toBe('https://rm.example.com');
@@ -81,7 +85,7 @@ it('requires REDMINE_URL', () => {
 
 Run: `npx jest src/config` — Expected: FAIL (`parseConfig` chưa tồn tại).
 
-- [ ] **Step 4: Implement `parseConfig` trong `src/config/config.ts`**; tạo `ConfigModule` global, import vào `AppModule`; `main.ts` lấy `app.get<AppConfig>(APP_CONFIG).port` để `listen`. Giá trị hợp lệ: `/^\d+$/` và `> 0`. `REDMINE_URL` phải parse được bằng `new URL()`. Tạo `.env.example` với 3 biến của Global Constraints.
+- [ ] **Step 4: Implement `parseConfig` trong `src/config/config.ts`**; tạo `ConfigModule` global, import vào `AppModule`; `main.ts` lấy `app.get<AppConfig>(APP_CONFIG).port` để `listen`. Giá trị hợp lệ: `/^\d+$/` và `> 0`. `REDMINE_URL` phải parse được bằng `new URL()`. Tạo `.env.example` với 4 biến của Global Constraints.
 
 - [ ] **Step 5: Chạy test + build**
 
@@ -152,8 +156,9 @@ it('filter drops blocked items', () => {
     listProjects(apiKey: string, page: PageArgs): Promise<Page<any>>
     getProject(apiKey: string, ref: ProjectRef): Promise<any> // đã check policy
     resolveProjectId(apiKey: string, ref: ProjectRef): Promise<number> // GET /projects/{ref}.json + assertAllowed
-    private request(apiKey: string, method: 'GET'|'POST'|'PUT', path: string,
+    private request(apiKey: string, method: 'GET'|'POST'|'PUT'|'DELETE', path: string,
                     query?: Record<string, string | number | string[] | undefined>, body?: unknown): Promise<any>
+                    // body là Buffer ⇒ gửi nguyên, Content-Type application/octet-stream; còn lại ⇒ JSON
     private page(apiKey: string, path: string, key: string, query: Record<string, ...>, page: PageArgs,
                  projectIdOf: (item: any) => number = (i) => i.project.id): Promise<Page<any>> // dùng lại ở Task 4, 5
                  // listProjects truyền (p) => p.id
@@ -218,7 +223,7 @@ it('maps 401', async () => { /* status 401 ⇒ 'Unauthorized' */ });
   export interface UpdateIssueArgs { project?: ProjectRef; subject?: string; description?: string; status_id?: number;
     priority_id?: number; assigned_to_id?: number; done_ratio?: number; notes?: string }
   listIssues(apiKey, args: ListIssuesArgs): Promise<Page<any>>
-  getIssue(apiKey, id: number): Promise<any>          // include=journals, check project
+  getIssue(apiKey, id: number): Promise<any>          // include=journals,attachments, check project
   createIssue(apiKey, args: CreateIssueArgs): Promise<any> // trả issue mới
   updateIssue(apiKey, id: number, args: UpdateIssueArgs): Promise<void>
   addIssueComment(apiKey, id: number, notes: string): Promise<void>
@@ -229,7 +234,7 @@ it('maps 401', async () => { /* status 401 ⇒ 'Unauthorized' */ });
     `f[]=subject, op[subject]=~, v[subject][]=<text>`;
     status: `open`/không truyền ⇒ `op[status_id]=o`, `closed` ⇒ `c`, `*` ⇒ `*`, số ⇒ `=` + `v[status_id][]=<id>` (luôn có `f[]=status_id`);
     assigned_to (nếu có) ⇒ `f[]=assigned_to_id, op[assigned_to_id]==, v[assigned_to_id][]=<me|id>`.
-  Xác nhận trên Redmine thật ở smoke test (Task 6).
+  Xác nhận trên Redmine thật ở smoke test (Task 7).
   `createIssue`/`updateIssue` gửi `{ issue: { ..., project_id } }` với `project_id` từ `resolveProjectId`.
 
 - [ ] **Step 1: Viết test fail** (`blocked = {12}`; issue 1 thuộc project 13, issue 2 thuộc project 12)
@@ -245,10 +250,10 @@ it('listIssues on blocked project ⇒ Not found, no /issues.json call', async ()
   await expect(gw.listIssues('k', { project: 12 })).rejects.toThrow('Not found');
   expect(m.calls.map(c => c.url.pathname)).not.toContain('/issues.json');
 });
-it('getIssue requests journals only and blocks', async () => {
+it('getIssue requests journals,attachments only and blocks', async () => {
   const m = mockFetch({ 'GET /issues/2.json': { body: { issue: { id: 2, project: { id: 12 } } } } });
   await expect(gw.getIssue('k', 2)).rejects.toThrow('Not found');
-  expect(m.calls[0].url.searchParams.get('include')).toBe('journals');
+  expect(m.calls[0].url.searchParams.get('include')).toBe('journals,attachments');
 });
 it('createIssue in blocked project sends no POST', async () => { /* project 12 ⇒ Not found; calls không có method POST */ });
 it('updateIssue moving issue into blocked project sends no PUT', async () => {
@@ -309,14 +314,78 @@ it('logTime posts { time_entry: {...} }', async () => { /* issue 1 ⇒ POST body
 
 ---
 
-### Task 6: MCP tools + controller
+### Task 6: RedmineGateway — attachments
 
 **Files:**
-- Create: `src/mcp/mcp.controller.ts`, `src/mcp/mcp.controller.spec.ts`, `src/mcp/mcp.module.ts`, `src/mcp/tools/result.ts`, `src/mcp/tools/projects.tools.ts`, `src/mcp/tools/issues.tools.ts`, `src/mcp/tools/time-entries.tools.ts`
-- Modify: `src/app.module.ts` (import `McpModule`)
+- Modify: `src/redmine/redmine.gateway.ts`, `src/redmine/redmine.gateway.spec.ts`, `src/redmine/fetch-mock.ts` (route trả body binary: `{ status?, raw: Buffer, contentType? }`)
 
 **Interfaces:**
-- Consumes: toàn bộ method public của `RedmineGateway` (Task 3–5), `RedmineError`
+- Consumes: `request`, `getIssue`, `createIssue`, `updateIssue`, `AppConfig.maxFileMb` (Task 1–5)
+- Produces:
+  ```ts
+  export interface FileInput { filename: string; content_base64: string; content_type?: string; description?: string }
+  // CreateIssueArgs, UpdateIssueArgs thêm: attachments?: FileInput[]
+  export interface DownloadedFile { filename: string; content_type: string; data: Buffer }
+  getAttachment(apiKey: string, issueId: number, attachmentId: number): Promise<DownloadedFile>
+  deleteAttachment(apiKey: string, issueId: number, attachmentId: number): Promise<void>
+  private uploadFiles(apiKey: string, files: FileInput[] | undefined): Promise<object[] | undefined>
+  // trả mảng { token, filename, content_type, description } cho field `uploads` của issue
+  ```
+  `createIssue`/`updateIssue`: check project như cũ ⇒ `uploadFiles` ⇒ gửi issue kèm `uploads` (bỏ field khi không có file).
+  `uploadFiles`: validate **tất cả** file trước khi upload file đầu tiên. Base64 hợp lệ khi khớp `/^[A-Za-z0-9+/]*={0,2}$/` và độ dài chia hết cho 4; sai ⇒ `RedmineError('Invalid base64 for <filename>')`. Tổng `Buffer.byteLength` > `maxFileMb * 1024 * 1024` ⇒ `RedmineError('File too large (max <N> MB)')`. Sau đó mỗi file `POST /uploads.json?filename=<filename>` với body Buffer ⇒ `upload.token`.
+  `getAttachment`/`deleteAttachment`: `getIssue` (check project) ⇒ tìm `attachmentId` trong `issue.attachments ?? []`, không có ⇒ `notFound()`. Get: `filesize` > giới hạn ⇒ `File too large (max <N> MB)`; tải `GET ${redmineUrl}/attachments/download/{id}` với header key, map lỗi như `request`, trả `{ filename, content_type, data }` từ metadata của attachment. Delete: `DELETE /attachments/{id}.json`.
+
+- [ ] **Step 1: Viết test fail** (`maxFileMb = 1`; issue 1 thuộc project 13 có attachment `{ id: 7, filename: 'a.txt', filesize: 5, content_type: 'text/plain' }`; issue 2 thuộc project 12)
+
+```ts
+it('createIssue with file uploads then posts uploads', async () => {
+  const m = mockFetch({ 'GET /projects/13.json': { body: { project: { id: 13 } } },
+    'POST /uploads.json': { status: 201, body: { upload: { token: 't1' } } },
+    'POST /issues.json': { status: 201, body: { issue: { id: 9 } } } });
+  await gw.createIssue('k', { project: 13, subject: 's',
+    attachments: [{ filename: 'a.txt', content_base64: Buffer.from('hello').toString('base64'), content_type: 'text/plain' }] });
+  const up = m.calls.find(c => c.url.pathname === '/uploads.json')!;
+  expect(up.url.searchParams.get('filename')).toBe('a.txt');
+  expect(Buffer.from(up.body).toString()).toBe('hello');
+  expect(m.calls.at(-1)!.body.issue.uploads).toEqual([{ token: 't1', filename: 'a.txt', content_type: 'text/plain' }]);
+});
+it('createIssue with file in blocked project sends no upload', async () => { /* project 12 ⇒ Not found; không call /uploads.json */ });
+it('updateIssue with file on blocked issue sends no upload', async () => { /* issue 2 ⇒ Not found; không call /uploads.json */ });
+it('rejects total size over MAX_FILE_MB before any upload', async () => {
+  /* 2 file mỗi file 600 KB ⇒ 'File too large (max 1 MB)'; không call /uploads.json */
+});
+it('rejects invalid base64 before any upload', async () => {
+  /* file 1 hợp lệ, file 2 content_base64 'abc$' ⇒ 'Invalid base64 for b.bin'; không call /uploads.json */
+});
+it('getAttachment downloads from built URL', async () => {
+  const m = mockFetch({ 'GET /issues/1.json': { body: { issue: { id: 1, project: { id: 13 },
+      attachments: [{ id: 7, filename: 'a.txt', filesize: 5, content_type: 'text/plain', content_url: 'https://evil.example/x' }] } } },
+    'GET /attachments/download/7': { raw: Buffer.from('hello') } });
+  const f = await gw.getAttachment('k', 1, 7);
+  expect(f).toEqual({ filename: 'a.txt', content_type: 'text/plain', data: Buffer.from('hello') });
+  expect(m.calls.every(c => c.url.host === 'rm.example.com')).toBe(true);
+});
+it.each([[2, 7], [1, 99]])('getAttachment(issue %p, att %p) ⇒ Not found, no download', async (issue, att) => { /* không call /attachments/download */ });
+it('getAttachment over size limit ⇒ File too large, no download', async () => { /* filesize 2 MB */ });
+it.each([[2, 7], [1, 99]])('deleteAttachment(issue %p, att %p) ⇒ Not found, no DELETE', async () => {});
+it('deleteAttachment sends DELETE /attachments/7.json', async () => {});
+```
+
+- [ ] **Step 2: Chạy, thấy fail.**
+- [ ] **Step 3: Implement** theo Interfaces.
+- [ ] **Step 4: Chạy, thấy pass** (cả test Task 4 cũ của `createIssue`/`updateIssue`).
+- [ ] **Step 5: Commit** — `git commit -m "feat: add issue attachments to gateway"`
+
+---
+
+### Task 7: MCP tools + controller
+
+**Files:**
+- Create: `src/mcp/mcp.controller.ts`, `src/mcp/mcp.controller.spec.ts`, `src/mcp/mcp.module.ts`, `src/mcp/tools/result.ts`, `src/mcp/tools/projects.tools.ts`, `src/mcp/tools/issues.tools.ts`, `src/mcp/tools/time-entries.tools.ts`, `src/mcp/tools/attachments.tools.ts`
+- Modify: `src/app.module.ts` (import `McpModule`), `src/main.ts` (body limit)
+
+**Interfaces:**
+- Consumes: toàn bộ method public của `RedmineGateway` (Task 3–6), `RedmineError`, `AppConfig.maxFileMb`
 - Produces:
   ```ts
   // result.ts
@@ -327,9 +396,15 @@ it('logTime posts { time_entry: {...} }', async () => { /* issue 1 ⇒ POST body
   export function registerProjectTools(server: McpServer, gw: RedmineGateway, apiKey: string): void
   export function registerIssueTools(server: McpServer, gw: RedmineGateway, apiKey: string): void
   export function registerTimeEntryTools(server: McpServer, gw: RedmineGateway, apiKey: string): void
+  export function registerAttachmentTools(server: McpServer, gw: RedmineGateway, apiKey: string): void
+  export function fileContent(f: DownloadedFile): CallToolResult['content'][number]
+  // text/*, application/json, application/xml ⇒ { type: 'text', text: utf8 }
+  // image/* ⇒ { type: 'image', data: base64, mimeType }
+  // khác ⇒ { type: 'text', text: JSON.stringify({ filename, content_type, content_base64 }) }
   ```
-  Tên tool (đúng spec §3): `list_projects`, `get_project`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `add_issue_comment`, `list_time_entries`, `log_time`. Dùng `server.registerTool(name, { description, inputSchema: { ...zod shape } }, handler)`; field zod khớp `*Args` ở Task 4–5; `project` là `z.union([z.number().int(), z.string()])`; `limit` `z.number().int().min(1).max(100).optional()`.
-  Controller: `@Post('mcp')` lấy header `x-redmine-api-key`, `trim()`, rỗng ⇒ 401 `{ error: 'Missing X-Redmine-API-Key' }`. Ngược lại: `new McpServer({ name: 'redmine', version: '0.1.0' })`, đăng ký 3 nhóm tool, `new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })`, `await server.connect(transport)`, `await transport.handleRequest(req, res, req.body)`, đóng cả hai khi `res.on('close')`. `@Get('mcp')`/`@Delete('mcp')` ⇒ 405.
+  Tên tool (đúng spec §3, 11 tool): `list_projects`, `get_project`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `add_issue_comment`, `list_time_entries`, `log_time`, `get_attachment`, `delete_attachment`. `create_issue`/`update_issue` có `attachments: z.array(z.object({ filename, content_base64, content_type?, description? })).optional()`; `get_attachment`/`delete_attachment` có `issue_id`, `attachment_id` (`z.number().int()`, bắt buộc). `get_attachment` trả `{ content: [fileContent(f)] }` (bọc trong try/catch `RedmineError` giống `toolResult`).
+  Body limit: `NestFactory.create(AppModule, { bodyParser: false })` rồi `app.useBodyParser('json', { limit: \`${Math.ceil(maxFileMb * 4 / 3) + 1}mb\` })`. Dùng `server.registerTool(name, { description, inputSchema: { ...zod shape } }, handler)`; field zod khớp `*Args` ở Task 4–5; `project` là `z.union([z.number().int(), z.string()])`; `limit` `z.number().int().min(1).max(100).optional()`.
+  Controller: `@Post('mcp')` lấy header `x-redmine-api-key`, `trim()`, rỗng ⇒ 401 `{ error: 'Missing X-Redmine-API-Key' }`. Ngược lại: `new McpServer({ name: 'redmine', version: '0.1.0' })`, đăng ký 4 nhóm tool, `new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })`, `await server.connect(transport)`, `await transport.handleRequest(req, res, req.body)`, đóng cả hai khi `res.on('close')`. `@Get('mcp')`/`@Delete('mcp')` ⇒ 405.
 
 - [ ] **Step 1: Viết test fail** (`mcp.controller.spec.ts`, Nest testing module + supertest, `RedmineGateway` mock)
 
@@ -339,11 +414,21 @@ it.each([undefined, '', '   '])('401 when api key header is %p', async (key) => 
   if (key !== undefined) r.set('X-Redmine-API-Key', key);
   await r.expect(401);
 });
-it('tools/list returns all 9 tools', async () => {
+it('tools/list returns all 11 tools', async () => {
   const res = await request(app.getHttpServer()).post('/mcp')
     .set('X-Redmine-API-Key', 'k').set('Accept', 'application/json, text/event-stream')
     .send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-  // parse body (JSON hoặc SSE 'data:' line) ⇒ tên tool sắp xếp === 9 tên ở Interfaces
+  // parse body (JSON hoặc SSE 'data:' line) ⇒ tên tool sắp xếp === 11 tên ở Interfaces
+});
+it.each([
+  ['text/plain', 'hello', { type: 'text', text: 'hello' }],
+  ['image/png', 'PNG', { type: 'image', data: Buffer.from('PNG').toString('base64'), mimeType: 'image/png' }],
+  ['application/zip', 'Z', { type: 'text', text: JSON.stringify({ filename: 'f', content_type: 'application/zip', content_base64: 'Wg==' }) }],
+])('fileContent(%s)', (ct, data, expected) => {
+  expect(fileContent({ filename: 'f', content_type: ct, data: Buffer.from(data) })).toEqual(expected);
+});
+it('accepts a 2 MB JSON body (body limit raised)', async () => {
+  // app tạo giống main.ts (bodyParser false + useBodyParser); POST /mcp với create_issue có content_base64 ~2 MB ⇒ không trả 413
 });
 it('RedmineError becomes isError tool result', async () => {
   // gw.getIssue mock reject new RedmineError('Not found'); tools/call get_issue {id: 2}
@@ -352,10 +437,10 @@ it('RedmineError becomes isError tool result', async () => {
 ```
 
 - [ ] **Step 2: Chạy, thấy fail.**
-- [ ] **Step 3: Implement** `toolResult`, 3 file tool, controller, `McpModule`.
+- [ ] **Step 3: Implement** `toolResult`, `fileContent`, 4 file tool, controller, `McpModule`, body limit trong `main.ts` (tách hàm `configureApp(app, config)` để test dùng chung).
 - [ ] **Step 4: Chạy toàn bộ test + build** — `npm test && npm run build` — PASS.
 - [ ] **Step 5: Smoke test thủ công với Redmine thật**
 
-Tạo `.env` (REDMINE_URL thật, `BLOCKED_PROJECT_IDS` = ID một project bạn có quyền xem), `npm run build && npm start`, rồi `npx @modelcontextprotocol/inspector` ⇒ transport Streamable HTTP, URL `http://localhost:3000/mcp`, header `X-Redmine-API-Key`. Kiểm tra: `list_projects` không có project bị chặn; `get_project` project bị chặn ⇒ `Not found`; `list_issues` với `subject` trả kết quả đúng (xác nhận cú pháp `f[]` ở Task 4).
+Tạo `.env` (REDMINE_URL thật, `BLOCKED_PROJECT_IDS` = ID một project bạn có quyền xem), `npm run build && npm start`, rồi `npx @modelcontextprotocol/inspector` ⇒ transport Streamable HTTP, URL `http://localhost:3000/mcp`, header `X-Redmine-API-Key`. Kiểm tra: `list_projects` không có project bị chặn; `get_project` project bị chặn ⇒ `Not found`; `list_issues` với `subject` trả kết quả đúng (xác nhận cú pháp `f[]` ở Task 4); `create_issue` kèm 1 file nhỏ ⇒ file hiện trên Redmine; `get_attachment` file text và ảnh; `delete_attachment` chạy được trên phiên bản Redmine đang dùng.
 
 - [ ] **Step 6: Commit** — `git commit -m "feat: expose redmine tools over MCP streamable HTTP"`
