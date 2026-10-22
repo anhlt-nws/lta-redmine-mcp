@@ -5,7 +5,7 @@ import { type DownloadedFile, type RedmineGateway } from '../../redmine/redmine.
 import { toolResult } from './result';
 
 export function fileContent(f: DownloadedFile): CallToolResult['content'][number] {
-  const ct = f.content_type ?? '';
+  const ct = f.content_type;
   if (ct.startsWith('text/') || ct === 'application/json' || ct === 'application/xml') {
     return { type: 'text', text: f.data.toString('utf8') };
   }
@@ -19,11 +19,7 @@ export function registerAttachmentTools(server: McpServer, gw: RedmineGateway, a
   server.registerTool('get_attachment', {
     description: 'Download an issue attachment (text and images inline, other types as base64 JSON).',
     inputSchema: shape,
-  }, async (a) => {
-    let file: DownloadedFile | undefined;
-    const res = await toolResult(async () => { file = await gw.getAttachment(apiKey, a.issue_id, a.attachment_id); });
-    return res.isError ? res : { content: [fileContent(file!)] };
-  });
+  }, (a) => toolResult(() => gw.getAttachment(apiKey, a.issue_id, a.attachment_id), (f) => [fileContent(f)]));
   server.registerTool('delete_attachment', { description: 'Delete an issue attachment.', inputSchema: shape },
     (a) => toolResult(() => gw.deleteAttachment(apiKey, a.issue_id, a.attachment_id)));
 }

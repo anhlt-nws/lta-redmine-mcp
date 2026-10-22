@@ -171,7 +171,12 @@ export class RedmineGateway {
     }
     const res = await this.send(apiKey, method, url, body);
     const text = await res.text();
-    const json = text ? JSON.parse(text) : undefined;
+    let json: any;
+    try {
+      json = text ? JSON.parse(text) : undefined;
+    } catch {
+      throw new RedmineError('Redmine returned a non-JSON response (check REDMINE_URL)');
+    }
     if (res.status === 422) throw new RedmineError(Array.isArray(json?.errors) ? json.errors.join('; ') : 'Validation failed');
     if (!res.ok) throw new RedmineError(`Redmine error ${res.status}`);
     return json;

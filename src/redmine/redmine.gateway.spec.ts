@@ -23,6 +23,12 @@ it.each(['12', 12, 'secret-proj'])('getProject(%p) on blocked project => Not fou
   mockFetch({ [`GET /projects/${ref}.json`]: { body: { project: { id: 12, identifier: 'secret-proj' } } } });
   await expect(gw.getProject('k', ref)).rejects.toThrow(new RedmineError('Not found'));
 });
+it('non-JSON 2xx response => RedmineError hinting at REDMINE_URL', async () => {
+  mockFetch({ 'GET /projects/x.json': { raw: Buffer.from('<html>login</html>'), contentType: 'text/html' } });
+  await expect(gw.getProject('k', 'x')).rejects.toThrow(
+    new RedmineError('Redmine returned a non-JSON response (check REDMINE_URL)'),
+  );
+});
 it('getProject returns allowed project; resolveProjectId returns id', async () => {
   mockFetch({ 'GET /projects/x.json': { body: { project: { id: 5 } } } });
   expect(await gw.getProject('k', 'x')).toEqual({ id: 5 });
@@ -321,6 +327,13 @@ ${b64.slice(8)}
     expect(await g.getAttachment('k', 1, 7)).toEqual({ filename: 'a.txt', content_type: 'text/plain', data: Buffer.from('hello') });
     expect(m.calls.every((c) => c.url.host === 'rm.example.com')).toBe(true);
     expect(m.calls.at(-1)!.headers['X-Redmine-API-Key']).toBe('k');
+  });
+  it('getAttachment defaults missing content_type to application/octet-stream', async () => {
+    mockFetch({
+      'GET /issues/1.json': { body: { issue: { id: 1, project: { id: 13 }, attachments: [{ id: 7, filename: 'a', filesize: 1 }] } } },
+      'GET /attachments/download/7': { raw: Buffer.from('Z') },
+    });
+    expect((await g.getAttachment('k', 1, 7)).content_type).toBe('application/octet-stream');
   });
   it('getAttachment maps download errors', async () => {
     mockFetch({ ...issues, 'GET /attachments/download/7': { status: 503 } });
