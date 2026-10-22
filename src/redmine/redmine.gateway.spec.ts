@@ -215,3 +215,91 @@ describe('time entries', () => {
     expect(m.calls[1].body).toEqual({ time_entry: { project_id: 13, hours: 2 } });
   });
 });
+
+describe('attachments', () => {
+  const cfg = parseConfig({ REDMINE_URL: 'https://rm.example.com/', BLOCKED_PROJECT_IDS: '12', MAX_FILE_MB: '1' });
+  const g = new RedmineGateway(cfg, new ProjectAccessPolicy(cfg));
+  const att = { id: 7, filename: 'a.txt', filesize: 5, content_type: 'text/plain', content_url: 'https://evil.example/x' };
+  const issues = {
+    'GET /issues/1.json': { body: { issue: { id: 1, project: { id: 13 }, attachments: [att] } } },
+    'GET /issues/2.json': { body: { issue: { id: 2, project: { id: 12 }, attachments: [att] } } },
+  };
+  const file = (filename: string, s: string) => ({ filename, content_base64: Buffer.from(s).toString('base64') });
+  const uploads = (m: { calls: any[] }) => m.calls.filter((c) => c.url.pathname === '/uploads.json');
+
+  it('createIssue with file uploads then posts uploads', async () => {
+    const m = mockFetch({
+      'GET /projects/13.json': { body: { project: { id: 13 } } },
+      'POST /uploads.json': { status: 201, body: { upload: { token: 't1' } } },
+      'POST /issues.json': { status: 201, body: { issue: { id: 9 } } },
+    });
+    await g.createIssue('k', { project: 13, subject: 's', attachments: [{ ...file('a.txt', 'hello'), content_type: 'text/plain' }] });
+    const up = uploads(m)[0];
+    expect(up.url.searchParams.get('filename')).toBe('a.txt');
+    expect(Buffer.from(up.body).toString()).toBe('hello');
+    expect(m.calls.at(-1)!.body.issue.uploads).toEqual([{ token: 't1', filename: 'a.txt', content_type: 'text/plain' }]);
+  });
+  it('createIssue without files omits uploads', async () => {
+    const m = mockFetch({
+      'GET /projects/13.json': { body: { project: { id: 13 } } },
+      'POST /issues.json': { status: 201, body: { issue: { id: 9 } } },
+    });
+    await g.createIssue('k', { project: 13, subject: 's' });
+    expect('uploads' in m.calls.at(-1)!.body.issue).toBe(false);
+  });
+  it('createIssue with file in blocked project sends no upload', async () => {
+    const m = mockFetch({ 'GET /projects/12.json': { body: { project: { id: 12 } } } });
+    await expect(g.createIssue('k', { project: 12, subject: 's', attachments: [file('a', 'x')] })).rejects.toThrow('Not found');
+    expect(uploads(m)).toHaveLength(0);
+  });
+  it('updateIssue with file on blocked issue sends no upload', async () => {
+    const m = mockFetch(issues);
+    await expect(g.updateIssue('k', 2, { attachments: [file('a', 'x')] })).rejects.toThrow('Not found');
+    expect(uploads(m)).toHaveLength(0);
+  });
+  it('rejects total size over MAX_FILE_MB before any upload', async () => {
+    const big = 'x'.repeat(600 * 1024);
+    const m = mockFetch({ 'GET /projects/13.json': { body: { project: { id: 13 } } } });
+    await expect(g.createIssue('k', { project: 13, subject: 's', attachments: [file('a', big), file('b', big)] }))
+      .rejects.toThrow('File too large (max 1 MB)');
+    expect(uploads(m)).toHaveLength(0);
+  });
+  it('rejects invalid base64 before any upload', async () => {
+    const m = mockFetch({ 'GET /projects/13.json': { body: { project: { id: 13 } } } });
+    await expect(g.createIssue('k', { project: 13, subject: 's',
+      attachments: [file('a.bin', 'ok'), { filename: 'b.bin', content_base64: 'abc$' }] })).rejects.toThrow('Invalid base64 for b.bin');
+    expect(uploads(m)).toHaveLength(0);
+  });
+  it('getAttachment downloads from built URL', async () => {
+    const m = mockFetch({ ...issues, 'GET /attachments/download/7': { raw: Buffer.from('hello') } });
+    expect(await g.getAttachment('k', 1, 7)).toEqual({ filename: 'a.txt', content_type: 'text/plain', data: Buffer.from('hello') });
+    expect(m.calls.every((c) => c.url.host === 'rm.example.com')).toBe(true);
+    expect(m.calls.at(-1)!.headers['X-Redmine-API-Key']).toBe('k');
+  });
+  it('getAttachment maps download errors', async () => {
+    mockFetch({ ...issues, 'GET /attachments/download/7': { status: 503 } });
+    await expect(g.getAttachment('k', 1, 7)).rejects.toThrow('Redmine unavailable');
+  });
+  it.each([[2, 7], [1, 99]])('getAttachment(issue %p, att %p) => Not found, no download', async (i, a) => {
+    const m = mockFetch(issues);
+    await expect(g.getAttachment('k', i, a)).rejects.toThrow('Not found');
+    expect(m.calls.some((c) => c.url.pathname.startsWith('/attachments'))).toBe(false);
+  });
+  it('getAttachment over size limit => File too large, no download', async () => {
+    const m = mockFetch({ 'GET /issues/1.json': { body: { issue: { id: 1, project: { id: 13 },
+      attachments: [{ ...att, filesize: 2 * 1024 * 1024 }] } } } });
+    await expect(g.getAttachment('k', 1, 7)).rejects.toThrow('File too large (max 1 MB)');
+    expect(m.calls.some((c) => c.url.pathname.startsWith('/attachments'))).toBe(false);
+  });
+  it.each([[2, 7], [1, 99]])('deleteAttachment(issue %p, att %p) => Not found, no DELETE', async (i, a) => {
+    const m = mockFetch(issues);
+    await expect(g.deleteAttachment('k', i, a)).rejects.toThrow('Not found');
+    expect(m.calls.some((c) => c.method === 'DELETE')).toBe(false);
+  });
+  it('deleteAttachment sends DELETE /attachments/7.json', async () => {
+    const m = mockFetch({ ...issues, 'DELETE /attachments/7.json': { status: 204 } });
+    await g.deleteAttachment('k', 1, 7);
+    expect(m.calls.at(-1)).toMatchObject({ method: 'DELETE' });
+    expect(m.calls.at(-1)!.url.pathname).toBe('/attachments/7.json');
+  });
+});

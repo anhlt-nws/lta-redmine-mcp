@@ -8,9 +8,11 @@ export interface PageArgs { limit?: number; offset?: number }
 export interface Page<T> { items: T[]; has_more: boolean }
 export interface ListIssuesArgs extends PageArgs { project?: ProjectRef; status?: string; assigned_to?: string; subject?: string }
 export interface CreateIssueArgs { project: ProjectRef; subject: string; description?: string; tracker_id?: number;
-  status_id?: number; priority_id?: number; assigned_to_id?: number }
+  status_id?: number; priority_id?: number; assigned_to_id?: number; attachments?: FileInput[] }
 export interface UpdateIssueArgs { project?: ProjectRef; subject?: string; description?: string; status_id?: number;
-  priority_id?: number; assigned_to_id?: number; done_ratio?: number; notes?: string }
+  priority_id?: number; assigned_to_id?: number; done_ratio?: number; notes?: string; attachments?: FileInput[] }
+export interface FileInput { filename: string; content_base64: string; content_type?: string; description?: string }
+export interface DownloadedFile { filename: string; content_type: string; data: Buffer }
 export interface ListTimeEntriesArgs extends PageArgs { project?: ProjectRef; issue_id?: number; user_id?: string; from?: string; to?: string }
 export interface LogTimeArgs { issue_id?: number; project?: ProjectRef; hours: number; spent_on?: string; activity_id?: number; comments?: string }
 type Query = Record<string, string | number | string[] | undefined>;
@@ -68,16 +70,60 @@ export class RedmineGateway {
   }
 
   async createIssue(apiKey: string, args: CreateIssueArgs): Promise<any> {
-    const { project, ...fields } = args;
+    const { project, attachments, ...fields } = args;
     const project_id = await this.resolveProjectId(apiKey, project);
-    return (await this.request(apiKey, 'POST', '/issues.json', undefined, { issue: { ...fields, project_id } })).issue;
+    const uploads = await this.uploadFiles(apiKey, attachments);
+    return (await this.request(apiKey, 'POST', '/issues.json', undefined, { issue: { ...fields, project_id, uploads } })).issue;
   }
 
   async updateIssue(apiKey: string, id: number, args: UpdateIssueArgs): Promise<void> {
     await this.getIssue(apiKey, id);
-    const { project, ...fields } = args;
+    const { project, attachments, ...fields } = args;
     const project_id = project === undefined ? undefined : await this.resolveProjectId(apiKey, project);
-    await this.request(apiKey, 'PUT', `/issues/${id}.json`, undefined, { issue: { ...fields, project_id } });
+    const uploads = await this.uploadFiles(apiKey, attachments);
+    await this.request(apiKey, 'PUT', `/issues/${id}.json`, undefined, { issue: { ...fields, project_id, uploads } });
+  }
+
+  async getAttachment(apiKey: string, issueId: number, attachmentId: number): Promise<DownloadedFile> {
+    const att = await this.findAttachment(apiKey, issueId, attachmentId);
+    if (att.filesize > this.maxBytes) throw this.tooLarge();
+    const res = await this.send(apiKey, 'GET', new URL(`${this.config.redmineUrl}/attachments/download/${attachmentId}`));
+    if (!res.ok) throw new RedmineError(`Redmine error ${res.status}`);
+    return { filename: att.filename, content_type: att.content_type, data: Buffer.from(await res.arrayBuffer()) };
+  }
+
+  async deleteAttachment(apiKey: string, issueId: number, attachmentId: number): Promise<void> {
+    await this.findAttachment(apiKey, issueId, attachmentId);
+    await this.request(apiKey, 'DELETE', `/attachments/${attachmentId}.json`);
+  }
+
+  private get maxBytes(): number { return this.config.maxFileMb * 1024 * 1024; }
+  private tooLarge(): RedmineError { return new RedmineError(`File too large (max ${this.config.maxFileMb} MB)`); }
+
+  private async findAttachment(apiKey: string, issueId: number, attachmentId: number): Promise<any> {
+    const att = ((await this.getIssue(apiKey, issueId)).attachments ?? []).find((a: any) => a.id === attachmentId);
+    if (!att) throw notFound();
+    return att;
+  }
+
+  private async uploadFiles(apiKey: string, files: FileInput[] | undefined): Promise<object[] | undefined> {
+    if (!files?.length) return undefined;
+    let total = 0;
+    const buffers = files.map((f) => {
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(f.content_base64) || f.content_base64.length % 4 !== 0) {
+        throw new RedmineError(`Invalid base64 for ${f.filename}`);
+      }
+      const buf = Buffer.from(f.content_base64, 'base64');
+      total += buf.byteLength;
+      return buf;
+    });
+    if (total > this.maxBytes) throw this.tooLarge();
+    const result: object[] = [];
+    for (const [i, f] of files.entries()) {
+      const { upload } = await this.request(apiKey, 'POST', '/uploads.json', { filename: f.filename }, buffers[i]);
+      result.push({ token: upload.token, filename: f.filename, content_type: f.content_type, description: f.description });
+    }
+    return result;
   }
 
   async addIssueComment(apiKey: string, id: number, notes: string): Promise<void> {
@@ -112,6 +158,16 @@ export class RedmineGateway {
       if (v === undefined) continue;
       for (const item of Array.isArray(v) ? v : [v]) url.searchParams.append(k, String(item));
     }
+    const res = await this.send(apiKey, method, url, body);
+    const text = await res.text();
+    const json = text ? JSON.parse(text) : undefined;
+    if (res.status === 422) throw new RedmineError(Array.isArray(json?.errors) ? json.errors.join('; ') : 'Validation failed');
+    if (!res.ok) throw new RedmineError(`Redmine error ${res.status}`);
+    return json;
+  }
+
+  // Fetch with the shared headers/redirect policy and status->error mapping; callers handle the rest.
+  private async send(apiKey: string, method: string, url: URL, body?: unknown): Promise<Response> {
     const raw = Buffer.isBuffer(body);
     let res: Response;
     try {
@@ -131,11 +187,7 @@ export class RedmineGateway {
     if (res.status === 401) throw new RedmineError('Unauthorized');
     if (res.status === 403) throw new RedmineError('Forbidden');
     if (res.status >= 500) throw new RedmineError('Redmine unavailable');
-    const text = await res.text();
-    const json = text ? JSON.parse(text) : undefined;
-    if (res.status === 422) throw new RedmineError(Array.isArray(json?.errors) ? json.errors.join('; ') : 'Validation failed');
-    if (!res.ok) throw new RedmineError(`Redmine error ${res.status}`);
-    return json;
+    return res;
   }
 
   private async page(
