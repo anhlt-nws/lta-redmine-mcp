@@ -6,6 +6,11 @@ import { RedmineError, notFound } from './redmine.errors';
 export type ProjectRef = number | string;
 export interface PageArgs { limit?: number; offset?: number }
 export interface Page<T> { items: T[]; has_more: boolean }
+export interface ListIssuesArgs extends PageArgs { project?: ProjectRef; status?: string; assigned_to?: string; subject?: string }
+export interface CreateIssueArgs { project: ProjectRef; subject: string; description?: string; tracker_id?: number;
+  status_id?: number; priority_id?: number; assigned_to_id?: number }
+export interface UpdateIssueArgs { project?: ProjectRef; subject?: string; description?: string; status_id?: number;
+  priority_id?: number; assigned_to_id?: number; done_ratio?: number; notes?: string }
 type Query = Record<string, string | number | string[] | undefined>;
 
 @Injectable()
@@ -20,13 +25,60 @@ export class RedmineGateway {
   }
 
   async getProject(apiKey: string, ref: ProjectRef): Promise<any> {
-    const { project } = await this.request(apiKey, 'GET', `/projects/${ref}.json`);
+    const { project } = await this.request(apiKey, 'GET', `/projects/${encodeURIComponent(String(ref))}.json`);
     this.policy.assertAllowed(project.id);
     return project;
   }
 
   async resolveProjectId(apiKey: string, ref: ProjectRef): Promise<number> {
     return (await this.getProject(apiKey, ref)).id;
+  }
+
+  async listIssues(apiKey: string, args: ListIssuesArgs): Promise<Page<any>> {
+    const query: Query = {};
+    if (args.project !== undefined) query.project_id = String(await this.resolveProjectId(apiKey, args.project));
+    if (args.subject === undefined) {
+      query.status_id = args.status;
+      query.assigned_to_id = args.assigned_to;
+    } else {
+      // Redmine ignores shortcut params once f[] is present, so everything goes through f[].
+      const status = args.status ?? 'open';
+      const f = ['subject', 'status_id'];
+      query['op[subject]'] = '~';
+      query['v[subject][]'] = [args.subject];
+      query['op[status_id]'] = { open: 'o', closed: 'c', '*': '*' }[status] ?? '=';
+      if (!['open', 'closed', '*'].includes(status)) query['v[status_id][]'] = [status];
+      if (args.assigned_to !== undefined) {
+        f.push('assigned_to_id');
+        query['op[assigned_to_id]'] = '=';
+        query['v[assigned_to_id][]'] = [args.assigned_to];
+      }
+      query['f[]'] = f;
+    }
+    return this.page(apiKey, '/issues.json', 'issues', query, args);
+  }
+
+  async getIssue(apiKey: string, id: number): Promise<any> {
+    const { issue } = await this.request(apiKey, 'GET', `/issues/${id}.json`, { include: 'journals,attachments' });
+    this.policy.assertAllowed(issue.project.id);
+    return issue;
+  }
+
+  async createIssue(apiKey: string, args: CreateIssueArgs): Promise<any> {
+    const { project, ...fields } = args;
+    const project_id = await this.resolveProjectId(apiKey, project);
+    return (await this.request(apiKey, 'POST', '/issues.json', undefined, { issue: { ...fields, project_id } })).issue;
+  }
+
+  async updateIssue(apiKey: string, id: number, args: UpdateIssueArgs): Promise<void> {
+    await this.getIssue(apiKey, id);
+    const { project, ...fields } = args;
+    const project_id = project === undefined ? undefined : await this.resolveProjectId(apiKey, project);
+    await this.request(apiKey, 'PUT', `/issues/${id}.json`, undefined, { issue: { ...fields, project_id } });
+  }
+
+  async addIssueComment(apiKey: string, id: number, notes: string): Promise<void> {
+    await this.updateIssue(apiKey, id, { notes });
   }
 
   private async request(
@@ -46,6 +98,7 @@ export class RedmineGateway {
     try {
       res = await fetch(url, {
         method,
+        redirect: 'error',
         headers: {
           'X-Redmine-API-Key': apiKey,
           'Content-Type': raw ? 'application/octet-stream' : 'application/json',
@@ -61,7 +114,7 @@ export class RedmineGateway {
     if (res.status >= 500) throw new RedmineError('Redmine unavailable');
     const text = await res.text();
     const json = text ? JSON.parse(text) : undefined;
-    if (res.status === 422) throw new RedmineError((json?.errors ?? []).join('; '));
+    if (res.status === 422) throw new RedmineError(Array.isArray(json?.errors) ? json.errors.join('; ') : 'Validation failed');
     if (!res.ok) throw new RedmineError(`Redmine error ${res.status}`);
     return json;
   }
