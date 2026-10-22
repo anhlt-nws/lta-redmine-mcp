@@ -14,7 +14,4 @@ export class ProjectAccessPolicy {
     if (this.isBlocked(projectId)) throw notFound();
   }
 
-  filter<T extends { project: { id: number } }>(items: T[]): T[] {
-    return items.filter((item) => !this.isBlocked(item.project.id));
-  }
 }

@@ -54,8 +54,8 @@ MCP client ──HTTP POST /mcp (header X-Redmine-API-Key)──► McpControlle
 
 | Tool | Luồng |
 |---|---|
-| `list_projects` | `GET /projects.json`, lọc bỏ ID bị chặn |
-| `get_project` | resolve, check, trả project |
+| `list_projects` | `GET /projects.json`, lọc bỏ ID bị chặn; xoá field `parent` của project nếu nó trỏ tới project bị chặn |
+| `get_project` | resolve, check, trả project (xoá `parent` nếu trỏ tới project bị chặn) |
 | `list_issues` (filter: project, status, assignee, subject) | nếu có project thì resolve và check; `GET /issues.json`; lọc theo `issue.project.id` |
 | `get_issue` | `GET /issues/{id}.json?include=journals,attachments`; check `issue.project.id`. Không include `children`/`relations` vì chứa subject của issue khác mà không kèm project |
 | `list_time_entries` (filter: project, issue, user, from, to) | nếu có project thì resolve và check; nếu có issue thì `GET` issue và check; `GET /time_entries.json`; lọc theo `entry.project.id` |
@@ -86,7 +86,7 @@ Body limit của Express (mặc định 100 KB) phải nâng lên đủ chứa b
 2. `attachment_id` không thuộc `issue.attachments` ⇒ `Not found`.
 3. `get_attachment`: `filesize` > `MAX_FILE_MB` ⇒ lỗi `File too large (max <N> MB)`; tải từ `${REDMINE_URL}/attachments/download/{id}` (tự dựng URL, không dùng `content_url` để key không đi sang host khác). Kết quả:
    - `text/*`, `application/json`, `application/xml`: MCP text content.
-   - `image/*`: MCP image content (base64 + mimeType).
+   - Chỉ `image/png`, `image/jpeg`, `image/gif`, `image/webp`: MCP image content (base64 + mimeType). Các `image/*` khác (svg, bmp, tiff...) rơi vào nhánh JSON bên dưới.
    - Khác: text content là JSON `{ filename, content_type, content_base64 }`.
 4. `delete_attachment`: `DELETE /attachments/{id}.json` (xác nhận phiên bản Redmine hỗ trợ khi smoke test).
 
@@ -153,5 +153,7 @@ test/
 - Text tự do (description, journal notes) nhắc tới project bị chặn thì không lọc được.
 - Journal `details` có thể chứa ID số của project cũ hoặc mới khi issue từng được chuyển project.
 - `parent` của issue chỉ chứa ID nên không lộ nội dung, nhưng lộ việc issue cha tồn tại.
+- `fixed_version` của issue được phép có thể là version được share từ project bị chặn (lộ tên version).
+- Với user không phải member, Redmine trả 403 cho project private bị chặn nhưng 404 cho project không tồn tại ⇒ lộ sự tồn tại (không lộ dữ liệu); server giữ nguyên 403 để lỗi quyền thật vẫn rõ ràng.
 - File đi qua context của AI dưới dạng base64 nên tốn token; chỉ hợp file nhỏ.
 - Nếu upload được vài file rồi lỗi ở file sau hoặc ở bước tạo/sửa issue, các file đã upload bị bỏ lại ở trạng thái chưa gắn vào issue nào; admin dọn bằng `rake redmine:attachments:prune`.

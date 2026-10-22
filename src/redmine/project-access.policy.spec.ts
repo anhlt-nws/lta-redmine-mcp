@@ -17,14 +17,3 @@ it('assertAllowed throws Not found', () => {
   expect(() => policy.assertAllowed(12)).toThrow(new RedmineError('Not found'));
   expect(() => policy.assertAllowed(13)).not.toThrow();
 });
-
-it('filter drops blocked items', () => {
-  expect(
-    policy
-      .filter([
-        { id: 1, project: { id: 12 } },
-        { id: 2, project: { id: 13 } },
-      ])
-      .map((i) => i.id),
-  ).toEqual([2]);
-});

@@ -28,6 +28,24 @@ it('getProject returns allowed project; resolveProjectId returns id', async () =
   expect(await gw.getProject('k', 'x')).toEqual({ id: 5 });
   expect(await gw.resolveProjectId('k', 'x')).toBe(5);
 });
+describe('project parent', () => {
+  const child = (parent: any) => ({ id: 13, parent });
+  it('strips blocked parent, keeps allowed parent', async () => {
+    mockFetch({
+      'GET /projects.json': { body: { projects: [child({ id: 12, name: 'Secret' }), { id: 14, parent: { id: 5, name: 'Ok' } }], total_count: 2 } },
+      'GET /projects/13.json': { body: { project: child({ id: 12, name: 'Secret' }) } },
+      'GET /projects/14.json': { body: { project: { id: 14, parent: { id: 5, name: 'Ok' } } } },
+    });
+    expect((await gw.listProjects('k', {})).items).toEqual([{ id: 13 }, { id: 14, parent: { id: 5, name: 'Ok' } }]);
+    expect(await gw.getProject('k', 13)).toEqual({ id: 13 });
+    expect(await gw.getProject('k', 14)).toEqual({ id: 14, parent: { id: 5, name: 'Ok' } });
+  });
+});
+it('times out and aborts fetch => Redmine unavailable', async () => {
+  const spy = jest.spyOn(global, 'fetch').mockRejectedValue(new DOMException('timeout', 'TimeoutError'));
+  await expect(gw.getProject('k', 'x')).rejects.toThrow('Redmine unavailable');
+  expect((spy.mock.calls[0][1] as any).signal).toBeInstanceOf(AbortSignal);
+});
 it('maps 404', async () => {
   mockFetch({});
   await expect(gw.getProject('k', 'x')).rejects.toThrow('Not found');
@@ -201,6 +219,16 @@ describe('time entries', () => {
     await expect(gw.logTime('k', { project: 'secret-proj', hours: 1 })).rejects.toThrow('Not found');
     expect(m.calls.some((c) => c.method === 'POST')).toBe(false);
   });
+  it('logTime with allowed issue but blocked project sends no POST', async () => {
+    const m = mockFetch({ ...i1, ...p12 });
+    await expect(gw.logTime('k', { issue_id: 1, project: 'secret-proj', hours: 1 })).rejects.toThrow('Not found');
+    expect(m.calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+  it('listTimeEntries with blocked project => Not found, no /time_entries.json call', async () => {
+    const m = mockFetch(p12);
+    await expect(gw.listTimeEntries('k', { project: 'secret-proj' })).rejects.toThrow('Not found');
+    expect(m.calls.map((c) => c.url.pathname)).not.toContain('/time_entries.json');
+  });
   it('logTime requires issue_id or project', async () => {
     await expect(gw.logTime('k', { hours: 1 })).rejects.toThrow('issue_id or project is required');
   });
@@ -256,6 +284,24 @@ describe('attachments', () => {
     const m = mockFetch(issues);
     await expect(g.updateIssue('k', 2, { attachments: [file('a', 'x')] })).rejects.toThrow('Not found');
     expect(uploads(m)).toHaveLength(0);
+  });
+  it('updateIssue of allowed issue into blocked project with file sends no upload and no PUT', async () => {
+    const m = mockFetch({ ...issues, 'GET /projects/12.json': { body: { project: { id: 12 } } } });
+    await expect(g.updateIssue('k', 1, { project: 12, attachments: [file('a', 'x')] })).rejects.toThrow('Not found');
+    expect(uploads(m)).toHaveLength(0);
+    expect(m.calls.some((c) => c.method === 'PUT')).toBe(false);
+  });
+  it('accepts line-wrapped base64', async () => {
+    const m = mockFetch({
+      'GET /projects/13.json': { body: { project: { id: 13 } } },
+      'POST /uploads.json': { status: 201, body: { upload: { token: 't' } } },
+      'POST /issues.json': { status: 201, body: { issue: { id: 9 } } },
+    });
+    const b64 = Buffer.from('hello world!').toString('base64');
+    await g.createIssue('k', { project: 13, subject: 's', attachments: [{ filename: 'a', content_base64: `${b64.slice(0, 8)}
+${b64.slice(8)}
+` }] });
+    expect(Buffer.from(uploads(m)[0].body).toString()).toBe('hello world!');
   });
   it('rejects total size over MAX_FILE_MB before any upload', async () => {
     const big = 'x'.repeat(600 * 1024);

@@ -48,8 +48,10 @@ it.each([
   ['text/plain', 'hello', { type: 'text', text: 'hello' }],
   ['image/png', 'PNG', { type: 'image', data: Buffer.from('PNG').toString('base64'), mimeType: 'image/png' }],
   ['application/zip', 'Z', { type: 'text', text: JSON.stringify({ filename: 'f', content_type: 'application/zip', content_base64: 'Wg==' }) }],
+  ['image/svg+xml', '<svg/>', { type: 'text', text: JSON.stringify({ filename: 'f', content_type: 'image/svg+xml', content_base64: Buffer.from('<svg/>').toString('base64') }) }],
+  [null, 'Z', { type: 'text', text: JSON.stringify({ filename: 'f', content_type: '', content_base64: 'Wg==' }) }],
 ])('fileContent(%s)', (ct, data, expected) => {
-  expect(fileContent({ filename: 'f', content_type: ct, data: Buffer.from(data) })).toEqual(expected);
+  expect(fileContent({ filename: 'f', content_type: ct as any, data: Buffer.from(data) })).toEqual(expected);
 });
 
 it('accepts a 2 MB JSON body (body limit raised)', async () => {

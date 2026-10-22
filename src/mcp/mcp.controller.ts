@@ -26,11 +26,16 @@ export class McpController {
     }
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
-      void transport.close();
-      void server.close();
+      transport.close().catch(() => {});
+      server.close().catch(() => {});
     });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch {
+      if (res.headersSent) res.end();
+      else res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
+    }
   }
 
   @Get()

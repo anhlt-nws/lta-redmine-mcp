@@ -5,11 +5,11 @@ import { type DownloadedFile, type RedmineGateway } from '../../redmine/redmine.
 import { toolResult } from './result';
 
 export function fileContent(f: DownloadedFile): CallToolResult['content'][number] {
-  const ct = f.content_type;
+  const ct = f.content_type ?? '';
   if (ct.startsWith('text/') || ct === 'application/json' || ct === 'application/xml') {
     return { type: 'text', text: f.data.toString('utf8') };
   }
-  if (ct.startsWith('image/')) return { type: 'image', data: f.data.toString('base64'), mimeType: ct };
+  if (['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(ct)) return { type: 'image', data: f.data.toString('base64'), mimeType: ct };
   return { type: 'text', text: JSON.stringify({ filename: f.filename, content_type: ct, content_base64: f.data.toString('base64') }) };
 }
 

@@ -24,14 +24,24 @@ export class RedmineGateway {
     private readonly policy: ProjectAccessPolicy,
   ) {}
 
-  listProjects(apiKey: string, page: PageArgs): Promise<Page<any>> {
-    return this.page(apiKey, '/projects.json', 'projects', {}, page, (p) => p.id);
+  async listProjects(apiKey: string, page: PageArgs): Promise<Page<any>> {
+    const res = await this.page(apiKey, '/projects.json', 'projects', {}, page, (p) => p.id);
+    return { ...res, items: res.items.map((p) => this.stripBlockedParent(p)) };
+  }
+
+  // A child's `parent` would leak the name of a blocked parent project.
+  private stripBlockedParent(project: any): any {
+    if (project.parent && this.policy.isBlocked(project.parent.id)) {
+      const { parent, ...rest } = project;
+      return rest;
+    }
+    return project;
   }
 
   async getProject(apiKey: string, ref: ProjectRef): Promise<any> {
     const { project } = await this.request(apiKey, 'GET', `/projects/${encodeURIComponent(String(ref))}.json`);
     this.policy.assertAllowed(project.id);
-    return project;
+    return this.stripBlockedParent(project);
   }
 
   async resolveProjectId(apiKey: string, ref: ProjectRef): Promise<number> {
@@ -89,7 +99,7 @@ export class RedmineGateway {
     if (att.filesize > this.maxBytes) throw this.tooLarge();
     const res = await this.send(apiKey, 'GET', new URL(`${this.config.redmineUrl}/attachments/download/${attachmentId}`));
     if (!res.ok) throw new RedmineError(`Redmine error ${res.status}`);
-    return { filename: att.filename, content_type: att.content_type, data: Buffer.from(await res.arrayBuffer()) };
+    return { filename: att.filename, content_type: att.content_type ?? 'application/octet-stream', data: Buffer.from(await res.arrayBuffer()) };
   }
 
   async deleteAttachment(apiKey: string, issueId: number, attachmentId: number): Promise<void> {
@@ -110,10 +120,11 @@ export class RedmineGateway {
     if (!files?.length) return undefined;
     let total = 0;
     const buffers = files.map((f) => {
-      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(f.content_base64) || f.content_base64.length % 4 !== 0) {
+      const b64 = f.content_base64.replace(/\s/g, '');
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) {
         throw new RedmineError(`Invalid base64 for ${f.filename}`);
       }
-      const buf = Buffer.from(f.content_base64, 'base64');
+      const buf = Buffer.from(b64, 'base64');
       total += buf.byteLength;
       return buf;
     });
@@ -174,6 +185,7 @@ export class RedmineGateway {
       res = await fetch(url, {
         method,
         redirect: 'error',
+        signal: AbortSignal.timeout(30_000),
         headers: {
           'X-Redmine-API-Key': apiKey,
           'Content-Type': raw ? 'application/octet-stream' : 'application/json',
