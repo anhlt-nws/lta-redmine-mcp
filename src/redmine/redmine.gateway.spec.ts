@@ -166,4 +166,52 @@ describe('issues', () => {
     expect(sp.get('assigned_to_id')).toBe('me');
     expect(sp.has('f[]')).toBe(false);
   });
+  it('listIssues status "constructor" is not treated as a shortcut', async () => {
+    const m = mockFetch({ 'GET /issues.json': { body: { issues: [], total_count: 0 } } });
+    await gw.listIssues('k', { subject: 'x', status: 'constructor' });
+    const sp = m.calls[0].url.searchParams;
+    expect(sp.get('op[status_id]')).toBe('=');
+    expect(sp.getAll('v[status_id][]')).toEqual(['constructor']);
+  });
+});
+
+describe('time entries', () => {
+  const i1 = { 'GET /issues/1.json': { body: { issue: { id: 1, project: { id: 13 } } } } };
+  const i2 = { 'GET /issues/2.json': { body: { issue: { id: 2, project: { id: 12 } } } } };
+  const p12 = { 'GET /projects/secret-proj.json': { body: { project: { id: 12 } } } };
+
+  it('listTimeEntries filters blocked entries', async () => {
+    const m = mockFetch({ 'GET /time_entries.json': { body: { time_entries: [{ id: 1, project: { id: 12 } }, { id: 2, project: { id: 13 } }], total_count: 2 } } });
+    expect((await gw.listTimeEntries('k', { user_id: 'me', from: '2026-01-01', to: '2026-01-31' })).items.map((i) => i.id)).toEqual([2]);
+    const sp = m.calls[0].url.searchParams;
+    expect([sp.get('user_id'), sp.get('from'), sp.get('to')]).toEqual(['me', '2026-01-01', '2026-01-31']);
+  });
+  it('listTimeEntries by blocked issue => Not found, no /time_entries.json call', async () => {
+    const m = mockFetch(i2);
+    await expect(gw.listTimeEntries('k', { issue_id: 2 })).rejects.toThrow('Not found');
+    expect(m.calls.map((c) => c.url.pathname)).not.toContain('/time_entries.json');
+  });
+  it('logTime on blocked issue sends no POST', async () => {
+    const m = mockFetch(i2);
+    await expect(gw.logTime('k', { issue_id: 2, hours: 1 })).rejects.toThrow('Not found');
+    expect(m.calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+  it('logTime on blocked project sends no POST', async () => {
+    const m = mockFetch(p12);
+    await expect(gw.logTime('k', { project: 'secret-proj', hours: 1 })).rejects.toThrow('Not found');
+    expect(m.calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+  it('logTime requires issue_id or project', async () => {
+    await expect(gw.logTime('k', { hours: 1 })).rejects.toThrow('issue_id or project is required');
+  });
+  it('logTime posts { time_entry: {...} } and returns it', async () => {
+    const m = mockFetch({ ...i1, 'POST /time_entries.json': { status: 201, body: { time_entry: { id: 7 } } } });
+    expect(await gw.logTime('k', { issue_id: 1, hours: 1.5 })).toEqual({ id: 7 });
+    expect(m.calls[1].body).toEqual({ time_entry: { issue_id: 1, hours: 1.5 } });
+  });
+  it('logTime with project sends project_id', async () => {
+    const m = mockFetch({ 'GET /projects/x.json': { body: { project: { id: 13 } } }, 'POST /time_entries.json': { status: 201, body: { time_entry: { id: 8 } } } });
+    await gw.logTime('k', { project: 'x', hours: 2 });
+    expect(m.calls[1].body).toEqual({ time_entry: { project_id: 13, hours: 2 } });
+  });
 });

@@ -11,6 +11,8 @@ export interface CreateIssueArgs { project: ProjectRef; subject: string; descrip
   status_id?: number; priority_id?: number; assigned_to_id?: number }
 export interface UpdateIssueArgs { project?: ProjectRef; subject?: string; description?: string; status_id?: number;
   priority_id?: number; assigned_to_id?: number; done_ratio?: number; notes?: string }
+export interface ListTimeEntriesArgs extends PageArgs { project?: ProjectRef; issue_id?: number; user_id?: string; from?: string; to?: string }
+export interface LogTimeArgs { issue_id?: number; project?: ProjectRef; hours: number; spent_on?: string; activity_id?: number; comments?: string }
 type Query = Record<string, string | number | string[] | undefined>;
 
 @Injectable()
@@ -46,7 +48,8 @@ export class RedmineGateway {
       const f = ['subject', 'status_id'];
       query['op[subject]'] = '~';
       query['v[subject][]'] = [args.subject];
-      query['op[status_id]'] = { open: 'o', closed: 'c', '*': '*' }[status] ?? '=';
+      const ops: Record<string, string> = { open: 'o', closed: 'c', '*': '*' };
+      query['op[status_id]'] = Object.hasOwn(ops, status) ? ops[status] : '=';
       if (!['open', 'closed', '*'].includes(status)) query['v[status_id][]'] = [status];
       if (args.assigned_to !== undefined) {
         f.push('assigned_to_id');
@@ -79,6 +82,22 @@ export class RedmineGateway {
 
   async addIssueComment(apiKey: string, id: number, notes: string): Promise<void> {
     await this.updateIssue(apiKey, id, { notes });
+  }
+
+  async listTimeEntries(apiKey: string, args: ListTimeEntriesArgs): Promise<Page<any>> {
+    const { project, limit, offset, ...filters } = args;
+    if (args.issue_id !== undefined) await this.getIssue(apiKey, args.issue_id);
+    const query: Query = { ...filters };
+    if (project !== undefined) query.project_id = await this.resolveProjectId(apiKey, project);
+    return this.page(apiKey, '/time_entries.json', 'time_entries', query, { limit, offset });
+  }
+
+  async logTime(apiKey: string, args: LogTimeArgs): Promise<any> {
+    const { project, ...fields } = args;
+    if (args.issue_id === undefined && project === undefined) throw new RedmineError('issue_id or project is required');
+    if (args.issue_id !== undefined) await this.getIssue(apiKey, args.issue_id);
+    const project_id = project === undefined ? undefined : await this.resolveProjectId(apiKey, project);
+    return (await this.request(apiKey, 'POST', '/time_entries.json', undefined, { time_entry: { ...fields, project_id } })).time_entry;
   }
 
   private async request(
