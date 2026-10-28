@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 npm run build                                   # nest build -> dist/
-npm start                                       # node --env-file-if-exists=.env dist/main (stdio unless MCP_TRANSPORT=http / --http)
+npm start                                       # node --env-file-if-exists=.env dist/main --http (start/start:prod are always HTTP)
 npm run start:dev                               # watch mode, also loads .env
 npm test                                        # jest, specs co-located as src/**/*.spec.ts
 npx jest src/redmine/redmine.gateway            # one spec file

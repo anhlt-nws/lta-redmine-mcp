@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -9,6 +9,12 @@ const DIST = join(__dirname, '..', 'dist', 'main.js');
 const built = existsSync(DIST);
 if (!built) console.warn(`${DIST} missing: run npm run build first`);
 jest.setTimeout(30000);
+
+// Existing shared servers start via these scripts with an old .env (no MCP_TRANSPORT); they must stay HTTP.
+it.each(['start', 'start:prod'])('npm run %s selects HTTP', (script) => {
+  const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+  expect(pkg.scripts[script]).toMatch(/ --http$/);
+});
 
 (built ? describe : describe.skip)('stdio binary', () => {
   it('lists 11 tools over stdio', async () => {

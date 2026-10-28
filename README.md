@@ -18,6 +18,8 @@ reach is still limited by their Redmine permissions.
     "env": { "REDMINE_URL": "https://redmine.example.com", "REDMINE_API_KEY": "<your key>" } } } }
 ```
 
+On native Windows, `npx` is a `.cmd` script, so use `"command": "cmd", "args": ["/c", "npx", "-y", "lta-redmine-mcp"]`.
+
 Requires Node >= 22.9.
 
 ## Client config — HTTP
@@ -46,5 +48,8 @@ Start the shared server with `npx lta-redmine-mcp --http` (or `MCP_TRANSPORT=htt
 ```bash
 npm install
 npm run build
-MCP_TRANSPORT=http REDMINE_URL=https://redmine.example.com npm start
+REDMINE_URL=https://redmine.example.com npm start   # npm start and start:prod always run HTTP
 ```
+
+**Upgrading an existing HTTP server:** stdio is now the default. A server started with `node dist/main` must add
+`--http` (or `MCP_TRANSPORT=http`); `npm start` / `npm run start:prod` already pass it.
