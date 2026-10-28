@@ -4,6 +4,8 @@
   "description": "MCP server for Redmine (stdio via npx, or shared HTTP) with per-project blocking",
   "author": "",
   "license": "MIT",
+  "repository": "github:anhlt-nws/lta-redmine-mcp",
+  "homepage": "https://github.com/anhlt-nws/lta-redmine-mcp#readme",
   "bin": {
     "lta-redmine-mcp": "dist/main.js"
   },
