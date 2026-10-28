@@ -5,6 +5,7 @@ const make = () => new ProjectAccessPolicy({
   redmineUrl: 'x',
   port: 1,
   maxFileMb: 5,
+  transport: 'http',
   blockedProjectIds: new Set([12]),
   blockedIdentifiers: new Set(['nws-sale']),
 });

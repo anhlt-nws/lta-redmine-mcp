@@ -24,6 +24,7 @@ const parse = (res: request.Response) => {
 
 beforeAll(async () => {
   process.env.REDMINE_URL = 'https://example.invalid';
+  process.env.MCP_TRANSPORT = 'http';
   const mod = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(RedmineGateway).useValue(gw).compile();
   app = mod.createNestApplication({ bodyParser: false });

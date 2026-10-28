@@ -4,7 +4,7 @@ import { ProjectAccessPolicy } from './project-access.policy';
 import { RedmineError } from './redmine.errors';
 import { RedmineGateway } from './redmine.gateway';
 
-const config = parseConfig({ REDMINE_URL: 'https://rm.example.com/', BLOCKED_PROJECT_IDS: '12' });
+const config = parseConfig({ REDMINE_URL: 'https://rm.example.com/', BLOCKED_PROJECT_IDS: '12', MCP_TRANSPORT: 'http' });
 const gw = new RedmineGateway(config, new ProjectAccessPolicy(config));
 
 afterEach(() => jest.restoreAllMocks());
@@ -251,7 +251,7 @@ describe('time entries', () => {
 });
 
 describe('attachments', () => {
-  const cfg = parseConfig({ REDMINE_URL: 'https://rm.example.com/', BLOCKED_PROJECT_IDS: '12', MAX_FILE_MB: '1' });
+  const cfg = parseConfig({ REDMINE_URL: 'https://rm.example.com/', BLOCKED_PROJECT_IDS: '12', MAX_FILE_MB: '1', MCP_TRANSPORT: 'http' });
   const g = new RedmineGateway(cfg, new ProjectAccessPolicy(cfg));
   const att = { id: 7, filename: 'a.txt', filesize: 5, content_type: 'text/plain', content_url: 'https://evil.example/x' };
   const issues = {
@@ -365,7 +365,7 @@ ${b64.slice(8)}
 
 describe('blocked identifiers', () => {
   const make = () => {
-    const cfg = parseConfig({ REDMINE_URL: 'https://rm.example.com', BLOCKED_PROJECT_IDS: '12,nws-sale' });
+    const cfg = parseConfig({ REDMINE_URL: 'https://rm.example.com', BLOCKED_PROJECT_IDS: '12,nws-sale', MCP_TRANSPORT: 'http' });
     return new RedmineGateway(cfg, new ProjectAccessPolicy(cfg));
   };
   const lookups = (m: { calls: any[] }) => m.calls.filter((c) => c.url.pathname === '/projects/nws-sale.json');
