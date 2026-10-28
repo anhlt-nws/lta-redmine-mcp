@@ -1,10 +1,16 @@
 {
   "name": "lta-redmine-mcp",
   "version": "0.0.1",
-  "description": "",
+  "description": "MCP server for Redmine (stdio via npx, or shared HTTP) with per-project blocking",
   "author": "",
-  "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "bin": {
+    "lta-redmine-mcp": "dist/main.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.tsbuildinfo"
+  ],
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\"",
@@ -16,7 +22,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand"
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

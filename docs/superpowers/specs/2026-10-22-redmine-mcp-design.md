@@ -12,7 +12,7 @@ MCP server cho Redmine, viết bằng NestJS, deploy dùng chung cho team qua HT
 - Project bị chặn không phân biệt được với project không tồn tại (cùng thông báo `Not found`).
 
 ### Quyết định đã chốt
-- Transport: Streamable HTTP, stateless, SDK chính thức `@modelcontextprotocol/sdk`.
+- Transport: Streamable HTTP, stateless, SDK chính thức `@modelcontextprotocol/sdk`. Từ 2026-10-28 có thêm stdio (mặc định, chạy qua `npx`), xem `2026-10-28-npx-stdio-design.md`.
 - Auth: header `X-Redmine-API-Key` của từng user; server không lưu key và không log key.
 - Danh sách chặn: do admin cấu hình qua env, áp dụng cho mọi user, chứa **project ID số và/hoặc identifier** (vd `12,nws-sale`). Identifier được đổi sang ID lúc chạy (§3.2).
 - **Không chặn đệ quy**: chỉ chặn đúng các ID được liệt kê; admin tự thêm project con nếu cần.
@@ -161,6 +161,7 @@ test/
 - Không có e2e với Redmine thật; smoke test thủ công bằng MCP Inspector.
 
 ## 7. Hạn chế đã biết
+- Ở chế độ stdio, user tự đặt `BLOCKED_PROJECT_IDS` nên danh sách chặn chỉ là tiện ích cục bộ, không phải biện pháp bảo mật; chỉ server HTTP dùng chung do admin cấu hình mới chặn có hiệu lực.
 - Text tự do (description, journal notes) nhắc tới project bị chặn thì không lọc được.
 - Journal `details` có thể chứa ID số của project cũ hoặc mới khi issue từng được chuyển project.
 - `parent` của issue chỉ chứa ID nên không lộ nội dung, nhưng lộ việc issue cha tồn tại.

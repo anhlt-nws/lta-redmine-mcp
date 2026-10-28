@@ -6,24 +6,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 npm run build                                   # nest build -> dist/
-npm start                                       # node --env-file-if-exists=.env dist/main
+npm start                                       # node --env-file-if-exists=.env dist/main (stdio unless MCP_TRANSPORT=http / --http)
 npm run start:dev                               # watch mode, also loads .env
 npm test                                        # jest, specs co-located as src/**/*.spec.ts
 npx jest src/redmine/redmine.gateway            # one spec file
 npx jest -t "getAttachment"                     # tests matching a name
 npx tsc --noEmit                                # type-check (ts-jest does not fail on type errors)
+npm run build && npx jest src/main.stdio        # e2e against dist/main.js; skipped if dist is missing
 npm run lint
 ```
 
-Node >= 22.9 (`--env-file-if-exists`). Env vars: `REDMINE_URL` (required), `BLOCKED_PROJECT_IDS`, `PORT` (3000), `MAX_FILE_MB` (5) — see `.env.example`. `start:prod` / `start:debug` do NOT load `.env`.
+Node >= 22.9 (`--env-file-if-exists`). Env vars: `REDMINE_URL` (required), `MCP_TRANSPORT` (`stdio` default | `http`), `REDMINE_API_KEY` (required in stdio), `BLOCKED_PROJECT_IDS`, `PORT` (3000, http only), `MAX_FILE_MB` (5) — see `.env.example`. `start:prod` / `start:debug` do NOT load `.env`.
 
 Manual check against a real Redmine: `npx @modelcontextprotocol/inspector` → Streamable HTTP, `http://localhost:3000/mcp`, header `X-Redmine-API-Key`.
 
-Design docs: `docs/superpowers/specs/2026-10-22-redmine-mcp-design.md` (binding requirements, incl. §7 known limitations) and `docs/superpowers/plans/2026-10-22-redmine-mcp.md`.
+Design docs: `docs/superpowers/specs/2026-10-22-redmine-mcp-design.md` (binding requirements, incl. §7 known limitations), `docs/superpowers/specs/2026-10-28-npx-stdio-design.md` (stdio + npx), and their plans in `docs/superpowers/plans/`.
 
 ## Architecture
 
-Stateless MCP server: `POST /mcp` (`src/mcp/mcp.controller.ts`) builds a fresh `McpServer` + `StreamableHTTPServerTransport` per request, with tools bound to that caller's `X-Redmine-API-Key`. Nothing is stored between requests; GET/DELETE `/mcp` return 405.
+Two transports, chosen in `parseConfig` and started in `src/main.ts`; both build tools via `createMcpServer(gw, apiKey)` (`src/mcp/mcp.server.ts`).
+
+- **stdio** (default; the npx bin is `dist/main.js`): one process per user, key from `REDMINE_API_KEY`, Nest via `createApplicationContext` with `logger: ['error']`. stdout is the protocol, and Nest writes every level except `error` to stdout — never log there.
+- **HTTP** (`--http` / `MCP_TRANSPORT=http`): see below.
+
+Stateless HTTP MCP server: `POST /mcp` (`src/mcp/mcp.controller.ts`) builds a fresh `McpServer` + `StreamableHTTPServerTransport` per request, with tools bound to that caller's `X-Redmine-API-Key`. Nothing is stored between requests; GET/DELETE `/mcp` return 405.
 
 The security invariant — **projects in `BLOCKED_PROJECT_IDS` are invisible and unwritable** — lives entirely in `src/redmine/redmine.gateway.ts`:
 
@@ -52,3 +58,4 @@ Whenever an AI working in this repo makes a mistake (a bug it introduced, a wron
 - **Wrote a test for a path that cannot happen.** A `null` content_type test (forced with `as any`) checked a default the gateway already made unreachable. → Test where the behavior actually lives; if a test needs `as any` to construct its input, question whether the path exists.
 - **Stated Redmine API details from memory as fact.** → Mark them unverified until checked on a real Redmine. All verified on redmine.newwave.vn (2026-10-22; writes on sandbox project `hcs_figma`, then cleaned up): `f[]/op/v` subject filter, `GET /attachments/download/{id}` without filename, `POST /uploads.json` + `uploads` on create/update, `DELETE /attachments/{id}.json`, image download, identifier resolution, every blocked write rejected with nothing changed.
 - **Ran `/security-review` without a remote.** It diffs against `origin/HEAD`, which does not exist here. → Add a remote first, or review a commit range manually.
+- **Ran `npm run lint` to check, which rewrote all of `src/`.** The script has `--fix` and the code is not prettier-formatted, so it reformats every file. → To check lint, run `npx eslint <files>` without `--fix`.
